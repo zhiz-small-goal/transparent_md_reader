@@ -16,11 +16,13 @@
 #include <algorithm>
 #include <cstdio>
 #include <cwchar>
+#include <cwctype>
 #include <gdiplus.h>
 #include <memory>
 #include <sys/stat.h>
 #include <windowsx.h>
 #include <cstdarg>
+#include <cstdlib>
 
 // SQLite 支持
 #define HAS_SQLITE 1
@@ -34,6 +36,12 @@ extern "C" {
 #pragma comment(lib, "comdlg32.lib")
 #endif
 
+struct LinkRange {
+    int startChar = 0;
+    int length = 0;
+    std::wstring url;
+};
+
 // 全局变量
 HWND g_hwnd = NULL;
 std::vector<std::wstring> g_lines;
@@ -45,9 +53,13 @@ const int WINDOW_WIDTH = 600;
 const int WINDOW_HEIGHT = 400;
 const int LEFT_MARGIN = 10;
 const int RIGHT_MARGIN = 10;
+const int TOP_MARGIN = 10;
+const int DRAG_THRESHOLD = 3;
 bool g_visible = true;
 std::wstring g_currentFile;
 std::wstring g_configFile = L"md_reader_config.ini";
+std::vector<std::vector<LinkRange>> g_lineLinks;
+std::vector<std::vector<LinkRange>> g_wrappedLineLinks;
 
 enum TrayCommand {
     ID_TRAY_BG_SLIDER = 1001,
@@ -63,6 +75,7 @@ COLORREF g_textColor = RGB(230, 230, 230);
 COLORREF g_indicatorColor = RGB(120, 120, 180);
 
 bool g_isDragging = false;
+bool g_hasMovedDuringDrag = false;
 POINT g_dragStart = {};
 POINT g_windowStart = {};
 
@@ -161,6 +174,11 @@ void SaveProgress();
 void LoadProgress();
 UINT_PTR CALLBACK ColorDialogHookProc(HWND hdlg, UINT uiMsg, WPARAM wParam, LPARAM lParam);
 void WrapTextLines();
+void ProcessMarkdownLinks();
+std::unique_ptr<Gdiplus::Font> CreateRenderFont();
+bool HitTestLink(int x, int y, std::wstring& url);
+bool TryHandleLinkClick(int x, int y);
+std::wstring ResolveLinkTarget(const std::wstring& raw);
 void UpdateCloseButtonRect();
 void DrawCloseButton(Gdiplus::Graphics& graphics, bool hovered);
 bool IsPointInRect(int x, int y, const RECT& rect);
@@ -658,8 +676,156 @@ std::vector<std::wstring> LoadMarkdownFile(const std::wstring& filepath) {
     if (lines.empty()) {
         lines.push_back(L"文件为空");
     }
-
+    
     return lines;
+}
+
+static bool RangeIntersectsExisting(int start, int length, const std::vector<LinkRange>& ranges) {
+    int end = start + length;
+    for (const auto& item : ranges) {
+        int otherStart = item.startChar;
+        int otherEnd = item.startChar + item.length;
+        if (start < otherEnd && end > otherStart) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool IsUrlTerminator(wchar_t ch) {
+    if (iswspace(ch)) {
+        return true;
+    }
+    switch (ch) {
+        case L')':
+        case L']':
+        case L'>':
+        case L'"':
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool IsTrailingPunctuation(wchar_t ch) {
+    switch (ch) {
+        case L'.':
+        case L',':
+        case L';':
+        case L':':
+        case L'!':
+        case L'?':
+            return true;
+        default:
+            return false;
+    }
+}
+
+static std::wstring TrimLinkTargetText(const std::wstring& input) {
+    if (input.empty()) return input;
+    size_t start = 0;
+    size_t end = input.size();
+    while (start < end && (iswspace(input[start]) || input[start] == L'<' || input[start] == L'"')) {
+        ++start;
+    }
+    while (end > start && (iswspace(input[end - 1]) || input[end - 1] == L'>' || input[end - 1] == L'"')) {
+        --end;
+    }
+    return input.substr(start, end - start);
+}
+
+static void AppendAutoLinkRanges(const std::wstring& text, std::vector<LinkRange>& ranges) {
+    size_t searchPos = 0;
+    while (searchPos < text.size()) {
+        size_t candidate = std::wstring::npos;
+        auto updateCandidate = [&](const std::wstring& prefix) {
+            size_t pos = text.find(prefix, searchPos);
+            if (pos != std::wstring::npos) {
+                if (candidate == std::wstring::npos || pos < candidate) {
+                    candidate = pos;
+                }
+            }
+        };
+        updateCandidate(L"http://");
+        updateCandidate(L"https://");
+        if (candidate == std::wstring::npos) {
+            break;
+        }
+        
+        size_t end = candidate;
+        while (end < text.size() && !IsUrlTerminator(text[end])) {
+            ++end;
+        }
+        while (end > candidate && IsTrailingPunctuation(text[end - 1])) {
+            --end;
+        }
+        if (end <= candidate) {
+            searchPos = candidate + 1;
+            continue;
+        }
+        int startChar = static_cast<int>(candidate);
+        int length = static_cast<int>(end - candidate);
+        if (!RangeIntersectsExisting(startChar, length, ranges)) {
+            LinkRange range;
+            range.startChar = startChar;
+            range.length = length;
+            range.url = text.substr(candidate, end - candidate);
+            ranges.push_back(std::move(range));
+        }
+        searchPos = end;
+    }
+}
+
+void ProcessMarkdownLinks() {
+    g_lineLinks.assign(g_lines.size(), {});
+    for (size_t idx = 0; idx < g_lines.size(); ++idx) {
+        const std::wstring& line = g_lines[idx];
+        std::wstring sanitized;
+        sanitized.reserve(line.size());
+        std::vector<LinkRange> ranges;
+        
+        size_t pos = 0;
+        while (pos < line.size()) {
+            if (line[pos] == L'\\' && pos + 1 < line.size()) {
+                sanitized.push_back(line[pos + 1]);
+                pos += 2;
+                continue;
+            }
+            
+            if (line[pos] == L'[') {
+                size_t closingBracket = line.find(L']', pos + 1);
+                if (closingBracket != std::wstring::npos &&
+                    closingBracket + 1 < line.size() &&
+                    line[closingBracket + 1] == L'(') {
+                    size_t closingParen = line.find(L')', closingBracket + 2);
+                    if (closingParen != std::wstring::npos) {
+                        std::wstring linkText = line.substr(pos + 1, closingBracket - pos - 1);
+                        std::wstring target = line.substr(closingBracket + 2, closingParen - (closingBracket + 2));
+                        int startChar = static_cast<int>(sanitized.size());
+                        sanitized += linkText;
+                        target = TrimLinkTargetText(target);
+                        if (!linkText.empty() && !target.empty()) {
+                            LinkRange range;
+                            range.startChar = startChar;
+                            range.length = static_cast<int>(linkText.size());
+                            range.url = target;
+                            ranges.push_back(std::move(range));
+                        }
+                        pos = closingParen + 1;
+                        continue;
+                    }
+                }
+            }
+            
+            sanitized.push_back(line[pos]);
+            ++pos;
+        }
+        
+        AppendAutoLinkRanges(sanitized, ranges);
+        
+        g_lines[idx] = sanitized;
+        g_lineLinks[idx] = std::move(ranges);
+    }
 }
 
 void SaveProgress() {
@@ -746,6 +912,7 @@ void LoadProgress() {
             fclose(testFile);
             g_currentFile = lastFile;
             g_lines = LoadMarkdownFile(lastFile);
+            ProcessMarkdownLinks();
             
             // 从 SQLite 加载该文件的历史记录（滚动位置、锁定状态）
             // 如果 SQLite 没有记录，才使用 INI 的值
@@ -766,6 +933,7 @@ void LoadProgress() {
 
 void LoadFileAndReset(const std::wstring& filepath) {
     g_lines = LoadMarkdownFile(filepath);
+    ProcessMarkdownLinks();
     g_currentFile = filepath;
     
     // 从 SQLite 加载历史（如果有）
@@ -1999,7 +2167,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     return (int)msg.wParam;
 }
-
 
 
 
