@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>透明 Markdown 阅读器 - 使用手册</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: "Microsoft YaHei", "Segoe UI", Tahoma, sans-serif;
+            line-height: 1.8;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .header .version {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+        
+        .content {
+            padding: 40px;
+        }
+        
+        .section {
+            margin-bottom: 40px;
+        }
+        
+        .section h2 {
+            color: #667eea;
+            font-size: 1.8em;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #667eea;
+        }
+        
+        .section h3 {
+            color: #764ba2;
+            font-size: 1.4em;
+            margin-top: 25px;
+            margin-bottom: 15px;
+        }
+        
+        .feature-box {
+            background: #f8f9ff;
+            border-left: 4px solid #667eea;
+            padding: 20px;
+            margin: 15px 0;
+            border-radius: 8px;
+        }
+        
+        .feature-box h4 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 1.2em;
+        }
+        
+        .tip-box {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 20px;
+            margin: 15px 0;
+            border-radius: 8px;
+        }
+        
+        .tip-box::before {
+            content: "💡 小贴士";
+            display: block;
+            font-weight: bold;
+            color: #f57c00;
+            margin-bottom: 10px;
+        }
+        
+        .warning-box {
+            background: #ffe6e6;
+            border-left: 4px solid #f44336;
+            padding: 20px;
+            margin: 15px 0;
+            border-radius: 8px;
+        }
+        
+        .warning-box::before {
+            content: "⚠️ 注意";
+            display: block;
+            font-weight: bold;
+            color: #d32f2f;
+            margin-bottom: 10px;
+        }
+        
+        .key {
+            display: inline-block;
+            background: #f5f5f5;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            padding: 3px 10px;
+            margin: 0 3px;
+            font-family: monospace;
+            font-weight: bold;
+            box-shadow: 0 2px 0 #bbb;
+        }
+        
+        .icon {
+            font-size: 1.5em;
+            margin-right: 5px;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        
+        table th {
+            background: #667eea;
+            color: white;
+            padding: 15px;
+            text-align: left;
+        }
+        
+        table td {
+            padding: 15px;
+            border-bottom: 1px solid #ddd;
+        }
+        
+        table tr:hover {
+            background: #f8f9ff;
+        }
+        
+        .step {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            text-align: center;
+            line-height: 40px;
+            font-size: 1.5em;
+            font-weight: bold;
+            margin-right: 15px;
+        }
+        
+        .step-content {
+            display: flex;
+            align-items: center;
+            margin: 25px 0;
+        }
+        
+        .step-text {
+            flex: 1;
+        }
+        
+        .mode-box {
+            display: inline-block;
+            padding: 10px 20px;
+            border-radius: 10px;
+            margin: 10px;
+            font-weight: bold;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        
+        .mode-unlock {
+            background: #d4edda;
+            border: 2px solid #28a745;
+            color: #155724;
+        }
+        
+        .mode-lock {
+            background: #f8d7da;
+            border: 2px solid #dc3545;
+            color: #721c24;
+        }
+        
+        .comparison {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin: 20px 0;
+        }
+        
+        .comparison-item {
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        
+        .comparison-item.good {
+            background: #d4edda;
+            border: 2px solid #28a745;
+        }
+        
+        .comparison-item.bad {
+            background: #f8d7da;
+            border: 2px solid #dc3545;
+        }
+        
+        .comparison-item h4 {
+            margin-bottom: 15px;
+            font-size: 1.3em;
+        }
+        
+        code {
+            background: #f4f4f4;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-family: "Consolas", monospace;
+            color: #e83e8c;
+        }
+        
+        ul, ol {
+            margin-left: 30px;
+            margin-top: 10px;
+        }
+        
+        li {
+            margin: 8px 0;
+        }
+        
+        .footer {
+            background: #f8f9fa;
+            padding: 30px;
+            text-align: center;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><span class="icon">📖</span>透明 Markdown 阅读器</h1>
+            <p class="version">完整使用手册 v2.0.0</p>
+        </div>
+        
+        <div class="content">
+            <!-- 软件介绍 -->
+            <div class="section">
+                <h2><span class="icon">🎯</span>这个软件是干什么的？</h2>
+                <p style="font-size: 1.1em; line-height: 2;">
+                    想象一下：你正在写代码，需要一边看文档一边敲键盘。传统方法是什么？<br>
+                    不停地在代码编辑器和文档之间 <strong>Alt+Tab 切来切去</strong>，是不是很烦？😤
+                </p>
+                <p style="font-size: 1.1em; line-height: 2; margin-top: 15px;">
+                    <strong>有了这个软件</strong>，你可以把文档<strong style="color: #667eea;">悬浮在屏幕上</strong>，背景<strong style="color: #667eea;">完全透明</strong>！<br>
+                    就像把笔记本贴在显示器上一样，<strong>既能看到代码，又能看到文档</strong>！👍
+                </p>
+                
+                <div class="feature-box">
+                    <h4>适合这些场景：</h4>
+                    <ul>
+                        <li><strong>编程时查 API 文档</strong> - 代码和文档同时看，不用来回切换</li>
+                        <li><strong>学习时记笔记</strong> - 一边看视频一边显示重点笔记</li>
+                        <li><strong>开会时看提纲</strong> - 演示PPT的同时，悄悄看会议要点</li>
+                        <li><strong>写作时参考资料</strong> - 素材和编辑器同时显示</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <!-- 快速开始 -->
+            <div class="section">
+                <h2><span class="icon">🚀</span>新手快速入门（3分钟学会）</h2>
+                
+                <div class="step-content">
+                    <span class="step">1</span>
+                    <div class="step-text">
+                        <h3>启动软件</h3>
+                        <p><strong>最简单：</strong>双击 <code>md_reader.exe</code>，软件会自动打开示例文档</p>
+                        <p><strong>打开自己的文件：</strong>把你的 <code>.md</code> 或 <code>.txt</code> 文件<strong>拖</strong>到程序图标上</p>
+                    </div>
+                </div>
+                
+                <div class="tip-box">
+                    <strong>第一次使用不知道怎么开始？</strong><br>
+                    就直接双击 <code>md_reader.exe</code>，会自动打开一个示例文档，你可以看看效果！
+                </div>
+                
+                <div class="step-content">
+                    <span class="step">2</span>
+                    <div class="step-text">
+                        <h3>调整到舒服的状态</h3>
+                        <p><strong>移动位置：</strong>按住<strong>鼠标左键</strong>拖动窗口到你想要的位置（比如屏幕右边）</p>
+                        <p><strong>让背景透明：</strong></p>
+                        <ol>
+                            <li>看屏幕<strong>右下角</strong>（时钟旁边），找到一个小图标（显示字母 M）</li>
+                            <li><strong>右键点击</strong>这个图标</li>
+                            <li>选择 <strong>"背景透明度…"</strong></li>
+                            <li>把滑块拖到<strong>最左边</strong>（数值为 0），背景就完全透明了！</li>
+                        </ol>
+                    </div>
+                </div>
+                
+                <div class="warning-box">
+                    <strong>文字看不清怎么办？</strong><br>
+                    如果背景是深色（比如黑色代码编辑器），文字颜色要选<strong>白色</strong>或<strong>黄色</strong><br>
+                    如果背景是浅色（比如白色网页），文字颜色要选<strong>黑色</strong>或<strong>深蓝色</strong><br>
+                    改颜色：右键托盘图标 → "文字颜色…" → 选一个你喜欢的颜色
+                </div>
+                
+                <div class="step-content">
+                    <span class="step">3</span>
+                    <div class="step-text">
+                        <h3>开始阅读和翻页</h3>
+                        <p><strong>翻页很简单，有3种方法：</strong></p>
+                        <table>
+                            <tr>
+                                <th style="width: 40%;">操作</th>
+                                <th>效果</th>
+                            </tr>
+                            <tr>
+                                <td>鼠标<strong>滚轮</strong>上下滚动</td>
+                                <td>一行一行慢慢看</td>
+                            </tr>
+                            <tr>
+                                <td><strong>右键点击</strong>窗口<strong>上半部分</strong></td>
+                                <td>快速往上翻半页 ↑（会显示箭头动画）</td>
+                            </tr>
+                            <tr>
+                                <td><strong>右键点击</strong>窗口<strong>下半部分</strong></td>
+                                <td>快速往下翻半页 ↓（会显示箭头动画）</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+                
+                <div class="tip-box">
+                    <strong>什么是"半页"？</strong><br>
+                    就是翻动半个窗口那么多的内容。比如窗口能显示20行，翻半页就是一次翻10行。<br>
+                    这样翻页既快速，又不会漏看内容！
+                </div>
+            </div>
+            
+            <!-- 锁定/穿透模式 - 最重要的新功能 -->
+            <div class="section">
+                <h2><span class="icon">🔒</span>超级功能：锁定/穿透模式（重点！）</h2>
+                
+                <p style="font-size: 1.1em; line-height: 2; margin-bottom: 20px;">
+                    这是这个软件<strong style="color: #667eea;">最强大的功能</strong>！理解了这个，你就真正会用这个软件了。
+                </p>
+                
+                <h3>什么是"穿透模式"？用生活中的例子解释</h3>
+                <p style="font-size: 1.05em; line-height: 2;">
+                    <strong>想象一下：</strong><br>
+                    你在电脑屏幕上<strong>贴了一张透明的便利贴</strong>（就是这个阅读窗口）。<br><br>
+                    
+                    <strong>🔓 解锁模式（交互模式）：</strong><br>
+                    就像<strong>普通便利贴</strong>，你可以：<br>
+                    • 用鼠标拖动它<br>
+                    • 点击上面的按钮<br>
+                    • 在上面右键翻页<br>
+                    但是！这样的话，<strong>便利贴会挡住下面的窗口</strong>，你点不到下面的程序了。<br><br>
+                    
+                    <strong>🔒 锁定模式（穿透模式）：</strong><br>
+                    就像<strong>这张便利贴变成了全息投影</strong>！虽然你能看到文字，但：<br>
+                    • 你的鼠标左键<strong>会穿透它</strong>，点到下面的窗口<br>
+                    • 你可以<strong>一边看文档，一边操作下面的程序</strong><br>
+                    • 文档就像漂浮的幻影一样，<strong>完全不挡事</strong>！<br><br>
+                    
+                    <strong style="color: #667eea;">这就是"穿透"的意思！</strong>
+                </p>
+                
+                <div class="comparison">
+                    <div class="comparison-item good">
+                        <h4>🔓 解锁模式（交互模式）</h4>
+                        <p><strong>什么时候用：</strong></p>
+                        <ul>
+                            <li>需要移动窗口位置</li>
+                            <li>需要打开新文件</li>
+                            <li>需要调整设置</li>
+                        </ul>
+                        <p><strong>特点：</strong>窗口正常工作，但会挡住下面的内容</p>
+                    </div>
+                    
+                    <div class="comparison-item bad">
+                        <h4>🔒 锁定模式（穿透模式）</h4>
+                        <p><strong>什么时候用：</strong></p>
+                        <ul>
+                            <li>只是阅读，不需要操作窗口</li>
+                            <li>需要点击窗口下面的东西</li>
+                            <li>不想窗口挡住其他程序</li>
+                        </ul>
+                        <p><strong>特点：</strong>左键穿透，但右键翻页仍然有效！</p>
+                    </div>
+                </div>
+                
+                <h3>如何切换这两种模式？（3种方法）</h3>
+                
+                <div class="feature-box">
+                    <h4>方法1：点击锁定图标（最简单）</h4>
+                    <p>看窗口<strong>右上角</strong>，关闭按钮 <strong>[✕]</strong> 的左边，有一个<strong>锁形图标</strong>：</p>
+                    <ul>
+                        <li><strong>🔓 开锁图标</strong> = 解锁模式（可以拖动窗口）</li>
+                        <li><strong>🔒 闭锁图标</strong> = 锁定模式（鼠标会穿透）</li>
+                    </ul>
+                    <p><strong>点击这个图标</strong>就能切换模式！鼠标悬停时图标会高亮提示。</p>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>方法2：用快捷键（高手都用这个）</h4>
+                    <p>按 <span class="key">Ctrl</span> + <span class="key">Shift</span> + <span class="key">L</span></p>
+                    <p>记忆方法：<strong>L</strong> = <strong>L</strong>ock（锁定）</p>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>方法3：托盘菜单</h4>
+                    <p>右键点击<strong>右下角的托盘图标</strong> → 选择 <strong>"🔒 锁定窗口（穿透模式）"</strong></p>
+                    <p>这个选项前面<strong>有勾✓</strong> = 已锁定，<strong>没勾</strong> = 未锁定</p>
+                </div>
+                
+                <h3>🎯 临时需要拖动怎么办？</h3>
+                <p style="font-size: 1.05em; line-height: 2;">
+                    比如你开启了<strong>锁定模式</strong>（窗口穿透），突然想<strong>临时移动一下窗口位置</strong>，<br>
+                    不需要关闭锁定！只要：
+                </p>
+                <div class="tip-box">
+                    <strong>按住 <span class="key">Ctrl</span> 键</strong>，然后拖动窗口<br>
+                    松开 <span class="key">Ctrl</span>，窗口又变回穿透模式了！<br><br>
+                    <strong>就像临时"抓住"了那张透明便利贴，移动完又让它飘回去！</strong>
+                </div>
+                
+                <div class="warning-box">
+                    <strong>重要提示：锁定模式下，右键翻页仍然有效！</strong><br>
+                    即使窗口处于穿透模式，你仍然可以：<br>
+                    • 右键窗口上半部分 → 向上翻页 ↑<br>
+                    • 右键窗口下半部分 → 向下翻页 ↓<br>
+                    • 点击关闭按钮 [✕] → 隐藏窗口<br>
+                    • 点击锁定图标 🔒 → 切换模式
+                </div>
+            </div>
+            
+            <!-- SQLite 历史记录功能 -->
+            <div class="section">
+                <h2><span class="icon">📚</span>智能历史记录功能（超强！）</h2>
+                
+                <p style="font-size: 1.1em; line-height: 2; margin-bottom: 20px;">
+                    这个软件会用 <strong style="color: #667eea;">SQLite 数据库</strong>为<strong>每个文件独立保存</strong>阅读历史！<br>
+                    就像浏览器会记住每个网页的浏览位置一样，这个软件会记住每个文档的阅读进度。
+                </p>
+                
+                <h3>会保存什么？</h3>
+                <div class="feature-box">
+                    <h4>每个文件独立保存：</h4>
+                    <ul>
+                        <li>📍 <strong>阅读进度</strong>：看到第几行了</li>
+                        <li>🔒 <strong>锁定状态</strong>：这个文件是否开启穿透模式</li>
+                    </ul>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>全局设置（所有文件共享）：</h4>
+                    <ul>
+                        <li>🎨 文字颜色</li>
+                        <li>📊 背景透明度</li>
+                        <li>📝 文字透明度</li>
+                        <li>📄 最后打开的文件</li>
+                    </ul>
+                </div>
+                
+                <h3>实际使用场景举例</h3>
+                <div class="step-content">
+                    <span class="step">1</span>
+                    <div class="step-text">
+                        <p>你打开 <code>Python教程.md</code>，看到第50行，<strong>保持解锁模式</strong>（因为要操作窗口）</p>
+                        <p>→ 软件记录：<code>Python教程.md = 第50行 + 解锁</code></p>
+                    </div>
+                </div>
+                
+                <div class="step-content">
+                    <span class="step">2</span>
+                    <div class="step-text">
+                        <p>切换到 <code>API文档.md</code>，看到第80行，<strong>开启锁定模式</strong>（方便边看边写代码）</p>
+                        <p>→ 软件记录：<code>API文档.md = 第80行 + 锁定</code></p>
+                    </div>
+                </div>
+                
+                <div class="step-content">
+                    <span class="step">3</span>
+                    <div class="step-text">
+                        <p>关闭软件，一周后重新打开...</p>
+                    </div>
+                </div>
+                
+                <div class="step-content">
+                    <span class="step">4</span>
+                    <div class="step-text">
+                        <p>拖入 <code>Python教程.md</code></p>
+                        <p>→ ✨ <strong>自动跳到第50行，自动设为解锁模式</strong></p>
+                    </div>
+                </div>
+                
+                <div class="step-content">
+                    <span class="step">5</span>
+                    <div class="step-text">
+                        <p>拖入 <code>API文档.md</code></p>
+                        <p>→ ✨ <strong>自动跳到第80行，自动设为锁定模式</strong></p>
+                    </div>
+                </div>
+                
+                <div class="tip-box">
+                    <strong>就像每本书都有独立的书签！</strong><br>
+                    不管你看了多少个文档，软件都能精确记住每一个的阅读进度和你的使用习惯。<br>
+                    下次打开时，一切都恢复到上次离开的状态，无需手动设置！
+                </div>
+                
+                <h3>数据存储位置</h3>
+                <p>软件会在同目录自动创建：</p>
+                <ul>
+                    <li><code>history/history.db</code> - SQLite数据库，存储所有文件的阅读历史</li>
+                    <li><code>md_reader_config.ini</code> - 配置文件，存储全局样式设置</li>
+                </ul>
+                
+                <div class="warning-box">
+                    <strong>想清除历史记录？</strong><br>
+                    删除 <code>history</code> 文件夹和 <code>md_reader_config.ini</code> 文件即可。<br>
+                    下次启动会重新创建，所有设置恢复为默认值。
+                </div>
+            </div>
+            
+            <!-- 所有快捷键 -->
+            <div class="section">
+                <h2><span class="icon">⌨️</span>所有快捷键一览表</h2>
+                <table>
+                    <tr>
+                        <th>快捷键</th>
+                        <th>功能说明</th>
+                        <th>什么时候用</th>
+                    </tr>
+                    <tr>
+                        <td><span class="key">Ctrl</span> + <span class="key">Alt</span> + <span class="key">↑</span></td>
+                        <td>向上滚动3行</td>
+                        <td>手离开鼠标时快速翻页</td>
+                    </tr>
+                    <tr>
+                        <td><span class="key">Ctrl</span> + <span class="key">Alt</span> + <span class="key">↓</span></td>
+                        <td>向下滚动3行</td>
+                        <td>手离开鼠标时快速翻页</td>
+                    </tr>
+                    <tr>
+                        <td><span class="key">Ctrl</span> + <span class="key">Shift</span> + <span class="key">L</span></td>
+                        <td><strong>切换锁定/穿透模式</strong></td>
+                        <td>快速开关窗口穿透效果</td>
+                    </tr>
+                    <tr>
+                        <td><span class="key">Ctrl</span> + <span class="key">Alt</span> + <span class="key">H</span></td>
+                        <td>隐藏/显示窗口</td>
+                        <td>临时不想看文档时</td>
+                    </tr>
+                    <tr>
+                        <td><span class="key">Ctrl</span> + <span class="key">Alt</span> + <span class="key">Esc</span></td>
+                        <td>退出程序</td>
+                        <td>彻底关闭软件</td>
+                    </tr>
+                </table>
+                
+                <div class="tip-box">
+                    <strong>记不住快捷键？</strong><br>
+                    没关系！所有功能都可以用鼠标操作，快捷键只是为了更方便。<br>
+                    用得多了，自然就记住了！
+                </div>
+            </div>
+            
+            <!-- 托盘图标详解 -->
+            <div class="section">
+                <h2><span class="icon">🎛️</span>托盘图标怎么用？</h2>
+                
+                <h3>托盘图标在哪里？</h3>
+                <p style="font-size: 1.05em; line-height: 2;">
+                    看屏幕<strong>右下角</strong>，时钟旁边，有很多小图标对吧？<br>
+                    找到一个显示<strong>字母 M</strong> 的图标，那就是我们的软件！
+                </p>
+                
+                <div class="tip-box">
+                    <strong>找不到图标？</strong><br>
+                    可能被折叠了！点击右下角的<strong>小箭头 ▲</strong>，展开隐藏的图标。
+                </div>
+                
+                <h3>对这个图标能做什么？</h3>
+                <table>
+                    <tr>
+                        <th style="width: 30%;">操作</th>
+                        <th>会发生什么</th>
+                    </tr>
+                    <tr>
+                        <td><strong>左键点击</strong></td>
+                        <td>显示/隐藏阅读窗口（快速切换）</td>
+                    </tr>
+                    <tr>
+                        <td><strong>右键点击</strong></td>
+                        <td>打开功能菜单（所有设置都在这里）</td>
+                    </tr>
+                </table>
+                
+                <h3>右键菜单里有什么？</h3>
+                <div class="feature-box">
+                    <h4>📊 背景透明度…</h4>
+                    <p>控制窗口背景有多透明（0 = 完全透明，255 = 完全不透明）</p>
+                    <p><strong>建议：</strong>设置为 0，这样背景完全透明，不挡东西</p>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>📝 文字透明度…</h4>
+                    <p>控制文字有多透明（0 = 看不见，255 = 完全清晰）</p>
+                    <p><strong>建议：</strong>设置为 200-255，文字清晰好看</p>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>🎨 文字颜色…</h4>
+                    <p>打开颜色选择器，选一个你喜欢的文字颜色</p>
+                    <p><strong>可以实时预览！</strong>移动色盘，窗口文字会立刻变颜色</p>
+                    <p>满意就点"确定"，不满意就点"取消"恢复原样</p>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>🔒 锁定窗口（穿透模式）</h4>
+                    <p>开关穿透模式（前面打勾✓ = 已锁定）</p>
+                    <p>点一下就能切换锁定/解锁状态</p>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>🔄 重新加载当前文件</h4>
+                    <p>如果你在其他软件里修改了正在看的文档，点这个刷新内容</p>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>📂 打开文件…</h4>
+                    <p>弹出文件选择窗口，选一个新的文档来看</p>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>❌ 退出</h4>
+                    <p>彻底关闭软件</p>
+                </div>
+            </div>
+            
+            <!-- 常见问题 -->
+            <div class="section">
+                <h2><span class="icon">❓</span>常见问题解答</h2>
+                
+                <div class="feature-box">
+                    <h4>Q1: 窗口不见了！怎么找回来？</h4>
+                    <p><strong>A:</strong> 很可能是被隐藏了，不是关闭了：</p>
+                    <ul>
+                        <li>方法1：<strong>左键点击</strong>右下角托盘图标（字母 M 那个）</li>
+                        <li>方法2：按快捷键 <span class="key">Ctrl</span> + <span class="key">Alt</span> + <span class="key">H</span></li>
+                    </ul>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>Q2: 我开启了锁定模式，为什么鼠标点不到窗口了？</h4>
+                    <p><strong>A:</strong> 这是正常的！锁定模式就是让鼠标穿透的。</p>
+                    <ul>
+                        <li>如果想关闭锁定：按住 <span class="key">Ctrl</span>，然后点击右上角的 🔒 图标</li>
+                        <li>或者：按快捷键 <span class="key">Ctrl</span> + <span class="key">Shift</span> + <span class="key">L</span></li>
+                    </ul>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>Q3: 文字看不清，怎么调整？</h4>
+                    <p><strong>A:</strong> 试试这些方法：</p>
+                    <ol>
+                        <li><strong>调高文字透明度：</strong>右键托盘 → "文字透明度…" → 拖到 255</li>
+                        <li><strong>换个对比度高的颜色：</strong>右键托盘 → "文字颜色…" → 选白色或黄色</li>
+                        <li><strong>调低背景透明度：</strong>右键托盘 → "背景透明度…" → 调到 20-50（给文字加个淡背景）</li>
+                    </ol>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>Q4: 中文显示乱码？</h4>
+                    <p><strong>A:</strong> 文件编码问题。解决方法：</p>
+                    <ol>
+                        <li>用<strong>记事本</strong>打开你的文件</li>
+                        <li>点"文件" → "另存为"</li>
+                        <li>在底部"编码"下拉框选择 <strong>UTF-8</strong></li>
+                        <li>保存，再用本软件打开</li>
+                    </ol>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>Q5: 怎么彻底关闭软件？</h4>
+                    <p><strong>A:</strong> 点关闭按钮 [✕] 只是隐藏窗口，软件还在后台运行。</p>
+                    <p>真正退出的方法：</p>
+                    <ul>
+                        <li>方法1：<strong>右键托盘图标</strong> → 选择"退出"</li>
+                        <li>方法2：按快捷键 <span class="key">Ctrl</span> + <span class="key">Alt</span> + <span class="key">Esc</span></li>
+                    </ul>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>Q6: 为什么提示"程序已经在运行中"？</h4>
+                    <p><strong>A:</strong> 软件已经启动了，只能运行一个。</p>
+                    <p>解决方法：</p>
+                    <ul>
+                        <li>检查右下角托盘图标，如果有就左键点击显示窗口</li>
+                        <li>如果要完全重启，先右键托盘图标 → "退出"，再重新打开软件</li>
+                    </ul>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>Q7: 软件会记住我的设置吗？</h4>
+                    <p><strong>A:</strong> 会！软件会自动保存：</p>
+                    <ul>
+                        <li>上次打开的文件</li>
+                        <li>阅读进度（滚动到哪一行了）</li>
+                        <li>文字颜色和透明度</li>
+                        <li>背景透明度</li>
+                        <li>锁定状态（是否穿透）</li>
+                    </ul>
+                    <p>下次启动会自动恢复，不用重新设置！</p>
+                </div>
+            </div>
+            
+            <!-- 使用技巧 -->
+            <div class="section">
+                <h2><span class="icon">💡</span>高级使用技巧</h2>
+                
+                <div class="feature-box">
+                    <h4>技巧1：设为默认打开程序</h4>
+                    <p>让 <code>.md</code> 文件双击就用这个软件打开：</p>
+                    <ol>
+                        <li>在文件资源管理器，找到一个 <code>.md</code> 文件</li>
+                        <li><strong>右键点击</strong> → "打开方式" → "选择其他应用"</li>
+                        <li>点"更多应用" → "在这台电脑上查找其他应用"</li>
+                        <li>找到 <code>md_reader.exe</code> 并选择</li>
+                        <li><strong>勾选</strong>"始终使用此应用打开 .md 文件"</li>
+                        <li>点"确定"</li>
+                    </ol>
+                    <p>以后双击 <code>.md</code> 文件，就自动用这个软件打开了！</p>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>技巧2：编程时的最佳设置</h4>
+                    <ul>
+                        <li><strong>位置：</strong>窗口放在屏幕右边或左边，不要挡住代码区</li>
+                        <li><strong>背景透明度：</strong>0（完全透明）</li>
+                        <li><strong>文字颜色：</strong>如果代码编辑器是深色主题，用白色或青色文字</li>
+                        <li><strong>模式：</strong>阅读时开启<strong>锁定模式</strong>（穿透），这样不影响写代码</li>
+                        <li><strong>快捷操作：</strong>用右键快速翻页，比滚轮快！</li>
+                    </ul>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>技巧3：多显示器使用</h4>
+                    <p>如果你有两个显示器：</p>
+                    <ul>
+                        <li><strong>主显示器：</strong>工作区（写代码、写文档）</li>
+                        <li><strong>副显示器：</strong>把阅读窗口放这里，设置为<strong>解锁模式</strong>，方便随时操作</li>
+                    </ul>
+                    <p>这样可以充分利用屏幕空间！</p>
+                </div>
+                
+                <div class="feature-box">
+                    <h4>技巧4：会议演示时悄悄看提纲</h4>
+                    <ol>
+                        <li>把会议要点写成 <code>.md</code> 文件</li>
+                        <li>用本软件打开，窗口放在PPT下方</li>
+                        <li>背景透明度设为 0</li>
+                        <li>开启<strong>锁定模式</strong>（穿透），这样点击PPT不会被窗口挡住</li>
+                        <li>需要翻页时，右键点击窗口</li>
+                    </ol>
+                    <p>观众看不出来你在看提纲！😎</p>
+                </div>
+            </div>
+            
+            <!-- 系统要求和更新 -->
+            <div class="section">
+                <h2><span class="icon">💻</span>系统要求和其他信息</h2>
+                
+                <h3>系统要求</h3>
+                <ul>
+                    <li><strong>操作系统：</strong>Windows 7 / 8 / 10 / 11</li>
+                    <li><strong>运行库：</strong>不需要！解压就能用</li>
+                    <li><strong>硬盘空间：</strong>约 300KB（非常小）</li>
+                    <li><strong>支持格式：</strong><code>.md</code> 和 <code>.txt</code> 文件（UTF-8 编码）</li>
+                </ul>
+                
+                <h3>配置文件</h3>
+                <p>软件会在同目录创建 <code>md_reader_config.ini</code>，保存你的设置。</p>
+                <p><strong>想重置所有设置？</strong>删除这个文件，重新打开软件即可。</p>
+                
+                <h3>隐私和安全</h3>
+                <ul>
+                    <li>✅ 完全本地运行，<strong>不联网</strong></li>
+                    <li>✅ <strong>不收集</strong>任何信息</li>
+                    <li>✅ <strong>不修改</strong>系统文件</li>
+                    <li>✅ 配置保存在程序目录，卸载时直接删除文件夹即可</li>
+                    <li>✅ 开源项目，代码可审查</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p style="font-size: 1.1em; margin-bottom: 10px;"><strong>感谢使用透明 Markdown 阅读器！</strong></p>
+            <p>有问题或建议？欢迎反馈！</p>
+            <p style="margin-top: 20px; color: #999;">版本 2.0.0 - 新增 SQLite 历史记录功能</p>
+        </div>
+    </div>
+</body>
+</html>
+
+
