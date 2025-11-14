@@ -179,6 +179,14 @@ std::unique_ptr<Gdiplus::Font> CreateRenderFont();
 bool HitTestLink(int x, int y, std::wstring& url);
 bool TryHandleLinkClick(int x, int y);
 std::wstring ResolveLinkTarget(const std::wstring& raw);
+void LoadFileAndReset(const std::wstring& filepath);
+bool ReadFileBinary(const std::wstring& filepath, std::string& outBuffer);
+std::wstring Utf8ToWString(const std::string& utf8);
+std::vector<std::wstring> LoadMarkdownFile(const std::wstring& filepath);
+bool InitHistoryDB();
+void CloseHistoryDB();
+void SaveFileHistoryDB(const std::wstring& path);
+bool LoadFileHistoryDB(const std::wstring& path);
 void UpdateCloseButtonRect();
 void DrawCloseButton(Gdiplus::Graphics& graphics, bool hovered);
 bool IsPointInRect(int x, int y, const RECT& rect);
@@ -193,18 +201,10 @@ void CheckCtrlKeyState();
 void CheckMouseState();
 void RestorePreviousForeground();
 
-// SQLite 历史记录
-bool InitHistoryDB();
-void CloseHistoryDB();
-void SaveFileHistoryDB(const std::wstring& path);
-bool LoadFileHistoryDB(const std::wstring& path);
-
-// 辅助函数：检测点是否在矩形内
 bool IsPointInRect(int x, int y, const RECT& rect) {
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
-// 更新关闭按钮的位置
 void UpdateCloseButtonRect() {
     if (!g_hwnd) return;
     
@@ -217,53 +217,44 @@ void UpdateCloseButtonRect() {
     g_closeButtonRect.bottom = g_closeButtonRect.top + CLOSE_BUTTON_SIZE;
 }
 
-// 更新锁定图标的位置（在关闭按钮左边）
 void UpdateLockIconRect() {
     if (!g_hwnd) return;
     
     RECT clientRect;
     GetClientRect(g_hwnd, &clientRect);
     
-    // 锁定图标在关闭按钮左边
     g_lockIconRect.right = g_closeButtonRect.left - LOCK_ICON_SPACING;
     g_lockIconRect.left = g_lockIconRect.right - LOCK_ICON_SIZE;
     g_lockIconRect.top = CLOSE_BUTTON_MARGIN;
     g_lockIconRect.bottom = g_lockIconRect.top + LOCK_ICON_SIZE;
 }
 
-// 绘制关闭按钮（跟随文字颜色和透明度）
 void DrawCloseButton(Gdiplus::Graphics& graphics, bool hovered) {
-    // 计算按钮中心
     float centerX = (g_closeButtonRect.left + g_closeButtonRect.right) / 2.0f;
     float centerY = (g_closeButtonRect.top + g_closeButtonRect.bottom) / 2.0f;
     float buttonSize = CLOSE_BUTTON_SIZE / 2.0f;
     
-    // 悬停时增加亮度
     BYTE alpha = g_textAlpha;
     BYTE r = GetRValue(g_textColor);
     BYTE g = GetGValue(g_textColor);
     BYTE b = GetBValue(g_textColor);
     
     if (hovered) {
-        // 悬停时颜色变亮 20%
         r = (std::min)(255, (int)r + (255 - r) * 20 / 100);
         g = (std::min)(255, (int)g + (255 - g) * 20 / 100);
         b = (std::min)(255, (int)b + (255 - b) * 20 / 100);
         
-        // 绘制半透明背景圆形
         Gdiplus::SolidBrush bgBrush(Gdiplus::Color(alpha * 15 / 100, r, g, b));
         graphics.FillEllipse(&bgBrush, 
             g_closeButtonRect.left, g_closeButtonRect.top,
             CLOSE_BUTTON_SIZE, CLOSE_BUTTON_SIZE);
     }
     
-    // 绘制 X 符号
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     
     Gdiplus::Pen pen(Gdiplus::Color(alpha, r, g, b), hovered ? 2.5f : 2.0f);
     pen.SetLineCap(Gdiplus::LineCapRound, Gdiplus::LineCapRound, Gdiplus::DashCapRound);
     
-    // X 的两条对角线
     float crossSize = buttonSize * 0.45f;
     graphics.DrawLine(&pen,
         centerX - crossSize, centerY - crossSize,
@@ -275,24 +266,20 @@ void DrawCloseButton(Gdiplus::Graphics& graphics, bool hovered) {
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeNone);
 }
 
-// 绘制锁定图标（🔓=交互模式 / 🔒=穿透模式）
 void DrawLockIcon(Gdiplus::Graphics& graphics, bool hovered) {
     float centerX = (g_lockIconRect.left + g_lockIconRect.right) / 2.0f;
     float centerY = (g_lockIconRect.top + g_lockIconRect.bottom) / 2.0f;
     
-    // 使用文字颜色
     BYTE alpha = g_textAlpha;
     BYTE r = GetRValue(g_textColor);
     BYTE g = GetGValue(g_textColor);
     BYTE b = GetBValue(g_textColor);
     
-    // 悬停时增加亮度
     if (hovered) {
         r = (std::min)(255, (int)r + (255 - r) * 20 / 100);
         g = (std::min)(255, (int)g + (255 - g) * 20 / 100);
         b = (std::min)(255, (int)b + (255 - b) * 20 / 100);
         
-        // 绘制半透明背景圆形
         Gdiplus::SolidBrush bgBrush(Gdiplus::Color(alpha * 15 / 100, r, g, b));
         graphics.FillEllipse(&bgBrush, 
             g_lockIconRect.left, g_lockIconRect.top,
@@ -310,20 +297,16 @@ void DrawLockIcon(Gdiplus::Graphics& graphics, bool hovered) {
     float shackleHeight = lockSize * 0.35f;
     
     if (g_isLocked) {
-        // 🔒 穿透模式：闭锁图标
-        // 锁体（实心矩形）
         Gdiplus::SolidBrush lockBrush(Gdiplus::Color(alpha, r, g, b));
         graphics.FillRectangle(&lockBrush,
             centerX - lockWidth / 2, centerY,
             lockWidth, lockHeight);
         
-        // 锁环（闭合的弧形）
         graphics.DrawArc(&pen,
             centerX - lockWidth / 2, centerY - shackleHeight,
             lockWidth, shackleHeight * 2,
             180, 180);
         
-        // 钥匙孔
         Gdiplus::SolidBrush keyholeBrush(Gdiplus::Color(alpha, 
             GetRValue(g_textColor) > 128 ? 0 : 255,
             GetGValue(g_textColor) > 128 ? 0 : 255,
@@ -333,21 +316,17 @@ void DrawLockIcon(Gdiplus::Graphics& graphics, bool hovered) {
             4.0f, 4.0f);
         
     } else {
-        // 🔓 交互模式：开锁图标
-        // 锁体（实心矩形）
         Gdiplus::SolidBrush lockBrush(Gdiplus::Color(alpha, r, g, b));
         graphics.FillRectangle(&lockBrush,
             centerX - lockWidth / 2, centerY,
             lockWidth, lockHeight);
         
-        // 锁环（开启的弧形，向右偏移）
         float openOffset = lockWidth * 0.5f;
         graphics.DrawArc(&pen,
             centerX - lockWidth / 2 + openOffset, centerY - shackleHeight,
             lockWidth, shackleHeight * 2,
             180, 180);
         
-        // 钥匙孔
         Gdiplus::SolidBrush keyholeBrush(Gdiplus::Color(alpha, 
             GetRValue(g_textColor) > 128 ? 0 : 255,
             GetGValue(g_textColor) > 128 ? 0 : 255,
@@ -360,7 +339,6 @@ void DrawLockIcon(Gdiplus::Graphics& graphics, bool hovered) {
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeNone);
 }
 
-// 切换锁定状态
 void ToggleLockState() {
     g_isLocked = !g_isLocked;
     if (!g_isLocked) {
@@ -372,8 +350,6 @@ void ToggleLockState() {
     SaveProgress();
 }
 
-// 更新点击穿透状态
-// 使用动态切换 WS_EX_TRANSPARENT 的方式（参考稳定版本）
 void UpdateClickThroughState() {
     if (!g_hwnd) return;
 
@@ -414,7 +390,6 @@ void UpdateClickThroughState() {
              (newStyle & WS_EX_TRANSPARENT) ? 1 : 0);
 }
 
-// 检查 Ctrl 键状态（定时器调用）
 void CheckCtrlKeyState() {
     bool ctrlNowPressed = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
 
@@ -447,7 +422,6 @@ void CheckCtrlKeyState() {
     }
 }
 
-// 检查鼠标状态（位置和右键，定时器调用）
 void CheckMouseState() {
     if (!g_hwnd) return;
 
@@ -517,8 +491,6 @@ void RestorePreviousForeground() {
 
     g_prevForeground = NULL;
 }
-
-// ==================== SQLite 历史记录实现 ====================
 
 bool InitHistoryDB() {
     CreateDirectoryW(L"history", NULL);
@@ -602,450 +574,6 @@ bool LoadFileHistoryDB(const std::wstring& path) {
     }
     
     return found;
-}
-
-bool ReadFileBinary(const std::wstring& filepath, std::string& outBuffer) {
-    outBuffer.clear();
-    FILE* fp = nullptr;
-    if (_wfopen_s(&fp, filepath.c_str(), L"rb") != 0 || fp == nullptr) {
-        return false;
-    }
-
-    char temp[4096];
-    size_t read = 0;
-    while ((read = fread(temp, 1, sizeof(temp), fp)) > 0) {
-        outBuffer.append(temp, read);
-    }
-    fclose(fp);
-    return true;
-}
-
-std::wstring Utf8ToWString(const std::string& utf8) {
-    if (utf8.empty()) {
-        return std::wstring();
-    }
-
-    int wideLength = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), NULL, 0);
-    if (wideLength <= 0) {
-        return std::wstring();
-    }
-
-    std::wstring wide(wideLength, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), &wide[0], wideLength);
-    return wide;
-}
-
-// 简单的 Markdown 文件读取（UTF-8转宽字符）
-std::vector<std::wstring> LoadMarkdownFile(const std::wstring& filepath) {
-    std::vector<std::wstring> lines;
-    std::string buffer;
-    if (!ReadFileBinary(filepath, buffer)) {
-        lines.push_back(L"无法打开文件: " + filepath);
-        return lines;
-    }
-
-    if (buffer.size() >= 3 && (unsigned char)buffer[0] == 0xEF && (unsigned char)buffer[1] == 0xBB && (unsigned char)buffer[2] == 0xBF) {
-        buffer.erase(0, 3);  // 去掉 UTF-8 BOM
-    }
-
-    std::wstring content = Utf8ToWString(buffer);
-    if (content.empty() && !buffer.empty()) {
-        lines.push_back(L"无法解析为 UTF-8 编码");
-        return lines;
-    }
-
-    size_t pos = 0;
-    while (pos <= content.size()) {
-        size_t end = content.find(L'\n', pos);
-        std::wstring line;
-        if (end == std::wstring::npos) {
-            line = content.substr(pos);
-            pos = content.size() + 1;
-        } else {
-            line = content.substr(pos, end - pos);
-            pos = end + 1;
-        }
-
-        if (!line.empty() && line.back() == L'\r') {
-            line.pop_back();
-        }
-
-        lines.push_back(line);
-    }
-
-    if (lines.empty()) {
-        lines.push_back(L"文件为空");
-    }
-    
-    return lines;
-}
-
-static bool RangeIntersectsExisting(int start, int length, const std::vector<LinkRange>& ranges) {
-    int end = start + length;
-    for (const auto& item : ranges) {
-        int otherStart = item.startChar;
-        int otherEnd = item.startChar + item.length;
-        if (start < otherEnd && end > otherStart) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool IsUrlTerminator(wchar_t ch) {
-    if (iswspace(ch)) {
-        return true;
-    }
-    switch (ch) {
-        case L')':
-        case L']':
-        case L'>':
-        case L'"':
-            return true;
-        default:
-            return false;
-    }
-}
-
-static bool IsTrailingPunctuation(wchar_t ch) {
-    switch (ch) {
-        case L'.':
-        case L',':
-        case L';':
-        case L':':
-        case L'!':
-        case L'?':
-            return true;
-        default:
-            return false;
-    }
-}
-
-static std::wstring TrimLinkTargetText(const std::wstring& input) {
-    if (input.empty()) return input;
-    size_t start = 0;
-    size_t end = input.size();
-    while (start < end && (iswspace(input[start]) || input[start] == L'<' || input[start] == L'"')) {
-        ++start;
-    }
-    while (end > start && (iswspace(input[end - 1]) || input[end - 1] == L'>' || input[end - 1] == L'"')) {
-        --end;
-    }
-    return input.substr(start, end - start);
-}
-
-static void AppendAutoLinkRanges(const std::wstring& text, std::vector<LinkRange>& ranges) {
-    size_t searchPos = 0;
-    while (searchPos < text.size()) {
-        size_t candidate = std::wstring::npos;
-        auto updateCandidate = [&](const std::wstring& prefix) {
-            size_t pos = text.find(prefix, searchPos);
-            if (pos != std::wstring::npos) {
-                if (candidate == std::wstring::npos || pos < candidate) {
-                    candidate = pos;
-                }
-            }
-        };
-        updateCandidate(L"http://");
-        updateCandidate(L"https://");
-        if (candidate == std::wstring::npos) {
-            break;
-        }
-        
-        size_t end = candidate;
-        while (end < text.size() && !IsUrlTerminator(text[end])) {
-            ++end;
-        }
-        while (end > candidate && IsTrailingPunctuation(text[end - 1])) {
-            --end;
-        }
-        if (end <= candidate) {
-            searchPos = candidate + 1;
-            continue;
-        }
-        int startChar = static_cast<int>(candidate);
-        int length = static_cast<int>(end - candidate);
-        if (!RangeIntersectsExisting(startChar, length, ranges)) {
-            LinkRange range;
-            range.startChar = startChar;
-            range.length = length;
-            range.url = text.substr(candidate, end - candidate);
-            ranges.push_back(std::move(range));
-        }
-        searchPos = end;
-    }
-}
-
-void ProcessMarkdownLinks() {
-    g_lineLinks.assign(g_lines.size(), {});
-    for (size_t idx = 0; idx < g_lines.size(); ++idx) {
-        const std::wstring& line = g_lines[idx];
-        std::wstring sanitized;
-        sanitized.reserve(line.size());
-        std::vector<LinkRange> ranges;
-        
-        size_t pos = 0;
-        while (pos < line.size()) {
-            if (line[pos] == L'\\' && pos + 1 < line.size()) {
-                sanitized.push_back(line[pos + 1]);
-                pos += 2;
-                continue;
-            }
-            
-            if (line[pos] == L'[') {
-                size_t closingBracket = line.find(L']', pos + 1);
-                if (closingBracket != std::wstring::npos &&
-                    closingBracket + 1 < line.size() &&
-                    line[closingBracket + 1] == L'(') {
-                    size_t closingParen = line.find(L')', closingBracket + 2);
-                    if (closingParen != std::wstring::npos) {
-                        std::wstring linkText = line.substr(pos + 1, closingBracket - pos - 1);
-                        std::wstring target = line.substr(closingBracket + 2, closingParen - (closingBracket + 2));
-                        int startChar = static_cast<int>(sanitized.size());
-                        sanitized += linkText;
-                        target = TrimLinkTargetText(target);
-                        if (!linkText.empty() && !target.empty()) {
-                            LinkRange range;
-                            range.startChar = startChar;
-                            range.length = static_cast<int>(linkText.size());
-                            range.url = target;
-                            ranges.push_back(std::move(range));
-                        }
-                        pos = closingParen + 1;
-                        continue;
-                    }
-                }
-            }
-            
-            sanitized.push_back(line[pos]);
-            ++pos;
-        }
-        
-        AppendAutoLinkRanges(sanitized, ranges);
-        
-        g_lines[idx] = sanitized;
-        g_lineLinks[idx] = std::move(ranges);
-    }
-}
-
-void SaveProgress() {
-    // SQLite 保存文件历史
-    if (!g_currentFile.empty()) {
-        SaveFileHistoryDB(g_currentFile);
-    }
-    
-    // INI 保存全局配置
-    FILE* fp = nullptr;
-    if (_wfopen_s(&fp, g_configFile.c_str(), L"w,ccs=UTF-8") != 0 || fp == nullptr) {
-        return;
-    }
-    
-    fwprintf(fp, L"[Config]\n");
-    fwprintf(fp, L"LastFile=%ls\n", g_currentFile.c_str());
-    fwprintf(fp, L"TextAlpha=%d\n", (int)g_textAlpha);
-    fwprintf(fp, L"BackgroundAlpha=%d\n", (int)g_backgroundAlpha);
-    fwprintf(fp, L"TextColor=%d\n", (int)g_textColor);
-    
-    fclose(fp);
-}
-
-void LoadProgress() {
-    FILE* fp = nullptr;
-    if (_wfopen_s(&fp, g_configFile.c_str(), L"r,ccs=UTF-8") != 0 || fp == nullptr) {
-        return;
-    }
-    
-    wchar_t line[1024];
-    std::wstring lastFile;
-    int scrollOffset = 0;
-    int textAlpha = -1;
-    int bgAlpha = -1;
-    int textColor = -1;
-    int isLocked = -1;
-    
-    while (fgetws(line, 1024, fp)) {
-        std::wstring wline(line);
-        // 移除换行符
-        if (!wline.empty() && wline.back() == L'\n') {
-            wline.pop_back();
-        }
-        if (!wline.empty() && wline.back() == L'\r') {
-            wline.pop_back();
-        }
-        
-        if (wline.find(L"LastFile=") == 0) {
-            lastFile = wline.substr(9);
-        } else if (wline.find(L"ScrollOffset=") == 0) {
-            scrollOffset = _wtoi(wline.substr(13).c_str());
-        } else if (wline.find(L"TextAlpha=") == 0) {
-            textAlpha = _wtoi(wline.substr(10).c_str());
-        } else if (wline.find(L"BackgroundAlpha=") == 0) {
-            bgAlpha = _wtoi(wline.substr(16).c_str());
-        } else if (wline.find(L"TextColor=") == 0) {
-            textColor = _wtoi(wline.substr(10).c_str());
-        } else if (wline.find(L"IsLocked=") == 0) {
-            isLocked = _wtoi(wline.substr(9).c_str());
-        }
-    }
-    
-    fclose(fp);
-    
-    // 应用加载的配置
-    if (textAlpha >= 0 && textAlpha <= 255) {
-        g_textAlpha = static_cast<BYTE>(textAlpha);
-    }
-    if (bgAlpha >= 0 && bgAlpha <= 255) {
-        g_backgroundAlpha = static_cast<BYTE>(bgAlpha);
-    }
-    if (textColor >= 0) {
-        g_textColor = static_cast<COLORREF>(textColor);
-    }
-    if (isLocked >= 0) {
-        g_isLocked = (isLocked != 0);
-    }
-    
-    // 加载文件
-    if (!lastFile.empty()) {
-        // 检查文件是否存在
-        FILE* testFile = nullptr;
-        if (_wfopen_s(&testFile, lastFile.c_str(), L"r") == 0 && testFile != nullptr) {
-            fclose(testFile);
-            g_currentFile = lastFile;
-            g_lines = LoadMarkdownFile(lastFile);
-            ProcessMarkdownLinks();
-            
-            // 从 SQLite 加载该文件的历史记录（滚动位置、锁定状态）
-            // 如果 SQLite 没有记录，才使用 INI 的值
-            if (!LoadFileHistoryDB(lastFile)) {
-                // SQLite 中没有记录，使用 INI 备份值
-                if (scrollOffset >= 0 && scrollOffset < (int)g_lines.size()) {
-                    g_scrollOffset = scrollOffset;
-                } else {
-                    g_scrollOffset = 0;
-                }
-                if (isLocked >= 0) {
-                    g_isLocked = (isLocked != 0);
-                }
-            }
-        }
-    }
-}
-
-void LoadFileAndReset(const std::wstring& filepath) {
-    g_lines = LoadMarkdownFile(filepath);
-    ProcessMarkdownLinks();
-    g_currentFile = filepath;
-    
-    // 从 SQLite 加载历史（如果有）
-    if (!LoadFileHistoryDB(filepath)) {
-        // 首次打开，使用默认值
-        g_scrollOffset = 0;
-        g_isLocked = false;
-    }
-    
-    WrapTextLines(); // 重新计算换行
-    UpdateClickThroughState(); // 应用锁定状态
-    if (g_hwnd) {
-        RenderLayeredWindow();
-    }
-    SaveProgress();
-}
-
-// 文本自动换行处理
-void WrapTextLines() {
-    g_wrappedLines.clear();
-    g_lineToOriginal.clear();
-    
-    if (g_lines.empty() || !g_hwnd) {
-        return;
-    }
-    
-    RECT rect;
-    GetClientRect(g_hwnd, &rect);
-    int windowWidth = rect.right - rect.left;
-    int textWidth = windowWidth - LEFT_MARGIN - RIGHT_MARGIN;
-    
-    if (textWidth <= 0) {
-        // 窗口太小，直接复制原始行
-        for (size_t i = 0; i < g_lines.size(); ++i) {
-            g_wrappedLines.push_back(g_lines[i]);
-            g_lineToOriginal.push_back(static_cast<int>(i));
-        }
-        return;
-    }
-    
-    // 创建 GDI+ 对象用于测量文本
-    HDC hdcScreen = GetDC(NULL);
-    HDC hdcMem = CreateCompatibleDC(hdcScreen);
-    HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, 1, 1);
-    HGDIOBJ oldBitmap = SelectObject(hdcMem, hBitmap);
-    
-    Gdiplus::Graphics graphics(hdcMem);
-    std::unique_ptr<Gdiplus::Font> font = std::make_unique<Gdiplus::Font>(
-        L"Consolas", 16.0f, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
-    if (font->GetLastStatus() != Gdiplus::Ok) {
-        font.reset(new Gdiplus::Font(L"Courier New", 16.0f,
-                                     Gdiplus::FontStyleRegular, Gdiplus::UnitPixel));
-    }
-    if (font->GetLastStatus() != Gdiplus::Ok) {
-        font.reset(new Gdiplus::Font(L"Arial", 16.0f,
-                                     Gdiplus::FontStyleRegular, Gdiplus::UnitPixel));
-    }
-    
-    // 为每一行进行换行处理
-    for (size_t lineIdx = 0; lineIdx < g_lines.size(); ++lineIdx) {
-        const std::wstring& line = g_lines[lineIdx];
-        
-        // 空行直接添加
-        if (line.empty()) {
-            g_wrappedLines.push_back(L"");
-            g_lineToOriginal.push_back(static_cast<int>(lineIdx));
-            continue;
-        }
-        
-        // 测量整行宽度
-        Gdiplus::RectF boundingBox;
-        graphics.MeasureString(line.c_str(), -1, font.get(),
-                             Gdiplus::PointF(0, 0), &boundingBox);
-        
-        // 如果行宽度小于可用宽度，直接添加
-        if (boundingBox.Width <= textWidth) {
-            g_wrappedLines.push_back(line);
-            g_lineToOriginal.push_back(static_cast<int>(lineIdx));
-            continue;
-        }
-        
-        // 需要换行：逐字符测量找到合适的断点
-        std::wstring currentLine;
-        for (size_t i = 0; i < line.length(); ++i) {
-            std::wstring testLine = currentLine + line[i];
-            
-            Gdiplus::RectF testBox;
-            graphics.MeasureString(testLine.c_str(), -1, font.get(),
-                                 Gdiplus::PointF(0, 0), &testBox);
-            
-            if (testBox.Width > textWidth && !currentLine.empty()) {
-                // 超出宽度，保存当前行并开始新行
-                g_wrappedLines.push_back(currentLine);
-                g_lineToOriginal.push_back(static_cast<int>(lineIdx));
-                currentLine = line[i];
-            } else {
-                currentLine = testLine;
-            }
-        }
-        
-        // 添加最后一行
-        if (!currentLine.empty()) {
-            g_wrappedLines.push_back(currentLine);
-            g_lineToOriginal.push_back(static_cast<int>(lineIdx));
-        }
-    }
-    
-    // 清理 GDI 对象
-    SelectObject(hdcMem, oldBitmap);
-    DeleteObject(hBitmap);
-    DeleteDC(hdcMem);
-    ReleaseDC(NULL, hdcScreen);
 }
 
 void UpdateBackgroundAlpha(BYTE alpha) {
@@ -1494,6 +1022,601 @@ HICON CreateCustomTrayIcon() {
     return hIcon;
 }
 
+void SaveProgress() {
+    if (!g_currentFile.empty()) {
+        SaveFileHistoryDB(g_currentFile);
+    }
+    
+    FILE* fp = nullptr;
+    if (_wfopen_s(&fp, g_configFile.c_str(), L"w,ccs=UTF-8") != 0 || fp == nullptr) {
+        return;
+    }
+    
+    fwprintf(fp, L"[Config]\n");
+    fwprintf(fp, L"LastFile=%ls\n", g_currentFile.c_str());
+    fwprintf(fp, L"TextAlpha=%d\n", (int)g_textAlpha);
+    fwprintf(fp, L"BackgroundAlpha=%d\n", (int)g_backgroundAlpha);
+    fwprintf(fp, L"TextColor=%d\n", (int)g_textColor);
+    
+    fclose(fp);
+}
+
+void LoadProgress() {
+    FILE* fp = nullptr;
+    if (_wfopen_s(&fp, g_configFile.c_str(), L"r,ccs=UTF-8") != 0 || fp == nullptr) {
+        return;
+    }
+    
+    wchar_t line[1024];
+    std::wstring lastFile;
+    int scrollOffset = 0;
+    int textAlpha = -1;
+    int bgAlpha = -1;
+    int textColor = -1;
+    int isLocked = -1;
+    
+    while (fgetws(line, 1024, fp)) {
+        std::wstring wline(line);
+        if (!wline.empty() && wline.back() == L'\n') {
+            wline.pop_back();
+        }
+        if (!wline.empty() && wline.back() == L'\r') {
+            wline.pop_back();
+        }
+        
+        if (wline.find(L"LastFile=") == 0) {
+            lastFile = wline.substr(9);
+        } else if (wline.find(L"ScrollOffset=") == 0) {
+            scrollOffset = _wtoi(wline.substr(13).c_str());
+        } else if (wline.find(L"TextAlpha=") == 0) {
+            textAlpha = _wtoi(wline.substr(10).c_str());
+        } else if (wline.find(L"BackgroundAlpha=") == 0) {
+            bgAlpha = _wtoi(wline.substr(16).c_str());
+        } else if (wline.find(L"TextColor=") == 0) {
+            textColor = _wtoi(wline.substr(10).c_str());
+        } else if (wline.find(L"IsLocked=") == 0) {
+            isLocked = _wtoi(wline.substr(9).c_str());
+        }
+    }
+    
+    fclose(fp);
+    
+    if (textAlpha >= 0 && textAlpha <= 255) {
+        g_textAlpha = static_cast<BYTE>(textAlpha);
+    }
+    if (bgAlpha >= 0 && bgAlpha <= 255) {
+        g_backgroundAlpha = static_cast<BYTE>(bgAlpha);
+    }
+    if (textColor >= 0) {
+        g_textColor = static_cast<COLORREF>(textColor);
+    }
+    if (isLocked >= 0) {
+        g_isLocked = (isLocked != 0);
+    }
+    
+    if (!lastFile.empty()) {
+        FILE* testFile = nullptr;
+        if (_wfopen_s(&testFile, lastFile.c_str(), L"r") == 0 && testFile != nullptr) {
+            fclose(testFile);
+            g_currentFile = lastFile;
+            g_lines = LoadMarkdownFile(lastFile);
+            ProcessMarkdownLinks();
+            
+            if (!LoadFileHistoryDB(lastFile)) {
+                if (scrollOffset >= 0 && scrollOffset < (int)g_lines.size()) {
+                    g_scrollOffset = scrollOffset;
+                } else {
+                    g_scrollOffset = 0;
+                }
+                if (isLocked >= 0) {
+                    g_isLocked = (isLocked != 0);
+                }
+            }
+        }
+    }
+}
+
+bool ReadFileBinary(const std::wstring& filepath, std::string& outBuffer) {
+    outBuffer.clear();
+    FILE* fp = nullptr;
+    if (_wfopen_s(&fp, filepath.c_str(), L"rb") != 0 || fp == nullptr) {
+        return false;
+    }
+
+    char temp[4096];
+    size_t read = 0;
+    while ((read = fread(temp, 1, sizeof(temp), fp)) > 0) {
+        outBuffer.append(temp, read);
+    }
+    fclose(fp);
+    return true;
+}
+
+std::wstring Utf8ToWString(const std::string& utf8) {
+    if (utf8.empty()) {
+        return std::wstring();
+    }
+
+    int wideLength = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), NULL, 0);
+    if (wideLength <= 0) {
+        return std::wstring();
+    }
+
+    std::wstring wide(wideLength, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), &wide[0], wideLength);
+    return wide;
+}
+
+std::vector<std::wstring> LoadMarkdownFile(const std::wstring& filepath) {
+    std::vector<std::wstring> lines;
+    std::string buffer;
+    if (!ReadFileBinary(filepath, buffer)) {
+        lines.push_back(L"无法打开文件: " + filepath);
+        return lines;
+    }
+
+    if (buffer.size() >= 3 && (unsigned char)buffer[0] == 0xEF && (unsigned char)buffer[1] == 0xBB && (unsigned char)buffer[2] == 0xBF) {
+        buffer.erase(0, 3);
+    }
+
+    std::wstring content = Utf8ToWString(buffer);
+    if (content.empty() && !buffer.empty()) {
+        lines.push_back(L"无法解析为 UTF-8 编码");
+        return lines;
+    }
+
+    size_t pos = 0;
+    while (pos <= content.size()) {
+        size_t end = content.find(L'\n', pos);
+        std::wstring line;
+        if (end == std::wstring::npos) {
+            line = content.substr(pos);
+            pos = content.size() + 1;
+        } else {
+            line = content.substr(pos, end - pos);
+            pos = end + 1;
+        }
+
+        if (!line.empty() && line.back() == L'\r') {
+            line.pop_back();
+        }
+
+        lines.push_back(line);
+    }
+
+    if (lines.empty()) {
+        lines.push_back(L"文件为空");
+    }
+
+    return lines;
+}
+
+static bool RangeIntersectsExisting(int start, int length, const std::vector<LinkRange>& ranges) {
+    int end = start + length;
+    for (const auto& item : ranges) {
+        int otherStart = item.startChar;
+        int otherEnd = item.startChar + item.length;
+        if (start < otherEnd && end > otherStart) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool IsUrlTerminator(wchar_t ch) {
+    if (iswspace(ch)) {
+        return true;
+    }
+    switch (ch) {
+        case L')':
+        case L']':
+        case L'>':
+        case L'"':
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool IsTrailingPunctuation(wchar_t ch) {
+    switch (ch) {
+        case L'.':
+        case L',':
+        case L';':
+        case L':':
+        case L'!':
+        case L'?':
+            return true;
+        default:
+            return false;
+    }
+}
+
+static std::wstring TrimLinkTargetText(const std::wstring& input) {
+    if (input.empty()) return input;
+    size_t start = 0;
+    size_t end = input.size();
+    while (start < end && (iswspace(input[start]) || input[start] == L'<' || input[start] == L'"')) {
+        ++start;
+    }
+    while (end > start && (iswspace(input[end - 1]) || input[end - 1] == L'>' || input[end - 1] == L'"')) {
+        --end;
+    }
+    return input.substr(start, end - start);
+}
+
+static void AppendAutoLinkRanges(const std::wstring& text, std::vector<LinkRange>& ranges) {
+    size_t searchPos = 0;
+    while (searchPos < text.size()) {
+        size_t candidate = std::wstring::npos;
+        auto updateCandidate = [&](const std::wstring& prefix) {
+            size_t pos = text.find(prefix, searchPos);
+            if (pos != std::wstring::npos) {
+                if (candidate == std::wstring::npos || pos < candidate) {
+                    candidate = pos;
+                }
+            }
+        };
+        updateCandidate(L"http://");
+        updateCandidate(L"https://");
+        if (candidate == std::wstring::npos) {
+            break;
+        }
+        
+        size_t end = candidate;
+        while (end < text.size() && !IsUrlTerminator(text[end])) {
+            ++end;
+        }
+        while (end > candidate && IsTrailingPunctuation(text[end - 1])) {
+            --end;
+        }
+        if (end <= candidate) {
+            searchPos = candidate + 1;
+            continue;
+        }
+        int startChar = static_cast<int>(candidate);
+        int length = static_cast<int>(end - candidate);
+        if (!RangeIntersectsExisting(startChar, length, ranges)) {
+            LinkRange range;
+            range.startChar = startChar;
+            range.length = length;
+            range.url = text.substr(candidate, end - candidate);
+            ranges.push_back(std::move(range));
+        }
+        searchPos = end;
+    }
+}
+
+void ProcessMarkdownLinks() {
+    g_lineLinks.assign(g_lines.size(), {});
+    for (size_t idx = 0; idx < g_lines.size(); ++idx) {
+        const std::wstring& line = g_lines[idx];
+        std::wstring sanitized;
+        sanitized.reserve(line.size());
+        std::vector<LinkRange> ranges;
+        
+        size_t pos = 0;
+        while (pos < line.size()) {
+            if (line[pos] == L'\\' && pos + 1 < line.size()) {
+                sanitized.push_back(line[pos + 1]);
+                pos += 2;
+                continue;
+            }
+            
+            if (line[pos] == L'[') {
+                size_t closingBracket = line.find(L']', pos + 1);
+                if (closingBracket != std::wstring::npos &&
+                    closingBracket + 1 < line.size() &&
+                    line[closingBracket + 1] == L'(') {
+                    size_t closingParen = line.find(L')', closingBracket + 2);
+                    if (closingParen != std::wstring::npos) {
+                        std::wstring linkText = line.substr(pos + 1, closingBracket - pos - 1);
+                        std::wstring target = line.substr(closingBracket + 2, closingParen - (closingBracket + 2));
+                        int startChar = static_cast<int>(sanitized.size());
+                        sanitized += linkText;
+                        target = TrimLinkTargetText(target);
+                        if (!linkText.empty() && !target.empty()) {
+                            LinkRange range;
+                            range.startChar = startChar;
+                            range.length = static_cast<int>(linkText.size());
+                            range.url = target;
+                            ranges.push_back(std::move(range));
+                        }
+                        pos = closingParen + 1;
+                        continue;
+                    }
+                }
+            }
+            
+            sanitized.push_back(line[pos]);
+            ++pos;
+        }
+        
+        AppendAutoLinkRanges(sanitized, ranges);
+        
+        g_lines[idx] = sanitized;
+        g_lineLinks[idx] = std::move(ranges);
+    }
+}
+
+void LoadFileAndReset(const std::wstring& filepath) {
+    g_lines = LoadMarkdownFile(filepath);
+    ProcessMarkdownLinks();
+    g_currentFile = filepath;
+    
+    if (!LoadFileHistoryDB(filepath)) {
+        g_scrollOffset = 0;
+        g_isLocked = false;
+    }
+    
+    WrapTextLines();
+    UpdateClickThroughState();
+    if (g_hwnd) {
+        RenderLayeredWindow();
+    }
+    SaveProgress();
+}
+
+std::unique_ptr<Gdiplus::Font> CreateRenderFont() {
+    auto font = std::make_unique<Gdiplus::Font>(
+        L"Consolas", 16.0f, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+    if (font->GetLastStatus() != Gdiplus::Ok) {
+        font.reset(new Gdiplus::Font(
+            L"Courier New", 16.0f, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel));
+    }
+    if (font->GetLastStatus() != Gdiplus::Ok) {
+        font.reset(new Gdiplus::Font(
+            L"Arial", 16.0f, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel));
+    }
+    if (font->GetLastStatus() != Gdiplus::Ok) {
+        font.reset();
+    }
+    return font;
+}
+
+void WrapTextLines() {
+    g_wrappedLines.clear();
+    g_lineToOriginal.clear();
+    g_wrappedLineLinks.clear();
+    
+    if (g_lines.empty() || !g_hwnd) {
+        return;
+    }
+    
+    RECT rect;
+    GetClientRect(g_hwnd, &rect);
+    int windowWidth = rect.right - rect.left;
+    int textWidth = windowWidth - LEFT_MARGIN - RIGHT_MARGIN;
+    
+    auto font = CreateRenderFont();
+    if (!font) {
+        return;
+    }
+    
+    if (textWidth <= 0) {
+        for (size_t i = 0; i < g_lines.size(); ++i) {
+            g_wrappedLines.push_back(g_lines[i]);
+            g_lineToOriginal.push_back(static_cast<int>(i));
+            g_wrappedLineLinks.emplace_back();
+        }
+        return;
+    }
+    
+    HDC hdcScreen = GetDC(NULL);
+    HDC hdcMem = CreateCompatibleDC(hdcScreen);
+    HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, 1, 1);
+    HGDIOBJ oldBitmap = SelectObject(hdcMem, hBitmap);
+    
+    Gdiplus::Graphics graphics(hdcMem);
+    
+    auto appendSegment = [&](size_t originalIdx, size_t startOffset, const std::wstring& text) {
+        g_wrappedLines.push_back(text);
+        g_lineToOriginal.push_back(static_cast<int>(originalIdx));
+        std::vector<LinkRange> spans;
+        if (originalIdx < g_lineLinks.size()) {
+            size_t segmentEnd = startOffset + text.size();
+            for (const auto& link : g_lineLinks[originalIdx]) {
+                size_t linkStart = static_cast<size_t>(link.startChar);
+                size_t linkEnd = linkStart + static_cast<size_t>(link.length);
+                size_t overlapStart = std::max(startOffset, linkStart);
+                size_t overlapEnd = std::min(segmentEnd, linkEnd);
+                if (overlapStart < overlapEnd) {
+                    LinkRange span;
+                    span.startChar = static_cast<int>(overlapStart - startOffset);
+                    span.length = static_cast<int>(overlapEnd - overlapStart);
+                    span.url = link.url;
+                    spans.push_back(std::move(span));
+                }
+            }
+        }
+        g_wrappedLineLinks.push_back(std::move(spans));
+    };
+    
+    for (size_t lineIdx = 0; lineIdx < g_lines.size(); ++lineIdx) {
+        const std::wstring& line = g_lines[lineIdx];
+        
+        if (line.empty()) {
+            appendSegment(lineIdx, 0, L"");
+            continue;
+        }
+        
+        Gdiplus::RectF boundingBox;
+        graphics.MeasureString(line.c_str(), -1, font.get(),
+                             Gdiplus::PointF(0, 0), &boundingBox);
+        
+        if (boundingBox.Width <= textWidth) {
+            appendSegment(lineIdx, 0, line);
+            continue;
+        }
+        
+        std::wstring currentLine;
+        size_t segmentStart = 0;
+        for (size_t i = 0; i < line.length(); ++i) {
+            std::wstring testLine = currentLine + line[i];
+            
+            Gdiplus::RectF testBox;
+            graphics.MeasureString(testLine.c_str(), -1, font.get(),
+                                 Gdiplus::PointF(0, 0), &testBox);
+            
+            if (testBox.Width > textWidth && !currentLine.empty()) {
+                appendSegment(lineIdx, segmentStart, currentLine);
+                currentLine.assign(1, line[i]);
+                segmentStart = i;
+            } else {
+                currentLine = std::move(testLine);
+            }
+        }
+        
+        if (!currentLine.empty()) {
+            appendSegment(lineIdx, segmentStart, currentLine);
+        }
+    }
+    
+    SelectObject(hdcMem, oldBitmap);
+    DeleteObject(hBitmap);
+    DeleteDC(hdcMem);
+    ReleaseDC(NULL, hdcScreen);
+}
+
+static float MeasureTextWidth(const std::wstring& text, int charCount,
+                              Gdiplus::Graphics& graphics, Gdiplus::Font* font) {
+    if (charCount <= 0) {
+        return 0.0f;
+    }
+    if (charCount > static_cast<int>(text.size())) {
+        charCount = static_cast<int>(text.size());
+    }
+    if (charCount <= 0) return 0.0f;
+    Gdiplus::RectF box;
+    graphics.MeasureString(text.c_str(), charCount, font,
+                           Gdiplus::PointF(0, 0), &box);
+    return box.Width;
+}
+
+std::wstring ResolveLinkTarget(const std::wstring& raw) {
+    std::wstring target = TrimLinkTargetText(raw);
+    if (target.empty()) {
+        return target;
+    }
+    if (target[0] == L'#') {
+        return std::wstring();
+    }
+    bool hasProtocol = target.find(L"://") != std::wstring::npos;
+    bool hasDrive = target.size() > 1 && target[1] == L':';
+    bool isUNC = target.size() > 1 && target[0] == L'\\' && target[1] == L'\\';
+    if (!hasProtocol && target.rfind(L"www.", 0) == 0) {
+        target = L"https://" + target;
+        hasProtocol = true;
+    }
+    if (hasProtocol || hasDrive || isUNC) {
+        return target;
+    }
+    if (!g_currentFile.empty()) {
+        std::wstring base = g_currentFile;
+        size_t pos = base.find_last_of(L"\\/");
+        std::wstring directory = (pos == std::wstring::npos) ? L"" : base.substr(0, pos + 1);
+        std::wstring combined = directory + target;
+        wchar_t buffer[MAX_PATH];
+        DWORD len = GetFullPathNameW(combined.c_str(), MAX_PATH, buffer, NULL);
+        if (len > 0 && len < MAX_PATH) {
+            return std::wstring(buffer, len);
+        }
+        return combined;
+    }
+    return target;
+}
+
+bool HitTestLink(int x, int y, std::wstring& url) {
+    if (!g_hwnd) return false;
+    RECT clientRect;
+    GetClientRect(g_hwnd, &clientRect);
+
+    if (x < LEFT_MARGIN || x > clientRect.right - RIGHT_MARGIN) {
+        return false;
+    }
+    int relativeY = y - TOP_MARGIN;
+    if (relativeY < 0) {
+        return false;
+    }
+    int lineInView = relativeY / LINE_HEIGHT;
+    if (lineInView < 0) return false;
+
+    const std::vector<std::wstring>& displayLines = g_wrappedLines.empty() ? g_lines : g_wrappedLines;
+    int displayIndex = g_scrollOffset + lineInView;
+    if (displayIndex < 0 || displayIndex >= static_cast<int>(displayLines.size())) {
+        return false;
+    }
+
+    const std::vector<std::vector<LinkRange>>* linkSource =
+        g_wrappedLines.empty() ? &g_lineLinks : &g_wrappedLineLinks;
+    if (displayIndex < 0 || displayIndex >= static_cast<int>(linkSource->size())) {
+        return false;
+    }
+    const auto& spans = (*linkSource)[displayIndex];
+    if (spans.empty()) {
+        return false;
+    }
+
+    auto font = CreateRenderFont();
+    if (!font) {
+        return false;
+    }
+
+    HDC hdcScreen = GetDC(NULL);
+    if (!hdcScreen) return false;
+    HDC hdcMem = CreateCompatibleDC(hdcScreen);
+    if (!hdcMem) {
+        ReleaseDC(NULL, hdcScreen);
+        return false;
+    }
+    HBITMAP hBitmap = CreateCompatibleBitmap(hdcScreen, 1, 1);
+    if (!hBitmap) {
+        DeleteDC(hdcMem);
+        ReleaseDC(NULL, hdcScreen);
+        return false;
+    }
+    HGDIOBJ oldBitmap = SelectObject(hdcMem, hBitmap);
+
+    Gdiplus::Graphics graphics(hdcMem);
+    bool handled = false;
+    float relativeX = static_cast<float>(x - LEFT_MARGIN);
+    const std::wstring& lineText = displayLines[displayIndex];
+
+    for (const auto& span : spans) {
+        float startX = MeasureTextWidth(lineText, span.startChar, graphics, font.get());
+        float endX = MeasureTextWidth(lineText, span.startChar + span.length, graphics, font.get());
+        if (relativeX >= startX && relativeX <= endX) {
+            url = span.url;
+            handled = true;
+            break;
+        }
+    }
+
+    SelectObject(hdcMem, oldBitmap);
+    DeleteObject(hBitmap);
+    DeleteDC(hdcMem);
+    ReleaseDC(NULL, hdcScreen);
+
+    return handled;
+}
+
+bool TryHandleLinkClick(int x, int y) {
+    std::wstring link;
+    if (!HitTestLink(x, y, link)) {
+        return false;
+    }
+    std::wstring target = ResolveLinkTarget(link);
+    if (target.empty()) {
+        return false;
+    }
+    HINSTANCE result = ShellExecuteW(NULL, L"open", target.c_str(), NULL, NULL, SW_SHOWNORMAL);
+    if ((INT_PTR)result <= 32) {
+        std::wstring message = L"无法打开链接：\n" + target;
+        MessageBox(g_hwnd, message.c_str(), L"提示", MB_OK | MB_ICONWARNING);
+    }
+    return true;
+}
+
 // 使用 GDI+ 绘制并更新分层窗口
 void RenderLayeredWindow() {
     if (!g_hwnd) {
@@ -1532,15 +1655,12 @@ void RenderLayeredWindow() {
     Gdiplus::SolidBrush bgBrush(Gdiplus::Color(g_backgroundAlpha, 0, 0, 0));
     graphics.FillRectangle(&bgBrush, 0, 0, width, height);
 
-    std::unique_ptr<Gdiplus::Font> font = std::make_unique<Gdiplus::Font>(
-        L"Consolas", 16.0f, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
-    if (font->GetLastStatus() != Gdiplus::Ok) {
-        font.reset(new Gdiplus::Font(L"Courier New", 16.0f,
-                                     Gdiplus::FontStyleRegular, Gdiplus::UnitPixel));
-    }
-    if (font->GetLastStatus() != Gdiplus::Ok) {
-        font.reset(new Gdiplus::Font(L"Arial", 16.0f,
-                                     Gdiplus::FontStyleRegular, Gdiplus::UnitPixel));
+    auto font = CreateRenderFont();
+    if (!font) {
+        SelectObject(hdcMem, oldBitmap);
+        DeleteObject(hBitmap);
+        DeleteDC(hdcMem);
+        return;
     }
 
     Gdiplus::SolidBrush textBrush(Gdiplus::Color(g_textAlpha,
@@ -1549,11 +1669,14 @@ void RenderLayeredWindow() {
     // 使用换行后的行数据
     const std::vector<std::wstring>& displayLines = g_wrappedLines.empty() ? g_lines : g_wrappedLines;
     
-    int maxVisibleLines = height / LINE_HEIGHT;
+    int maxVisibleLines = (height - TOP_MARGIN) / LINE_HEIGHT;
+    if (maxVisibleLines < 1) {
+        maxVisibleLines = 1;
+    }
     int startLine = g_scrollOffset;
     int endLine = std::min((int)displayLines.size(), startLine + maxVisibleLines);
 
-    float y = 10.0f;
+    float y = static_cast<float>(TOP_MARGIN);
     for (int i = startLine; i < endLine; ++i) {
         graphics.DrawString(displayLines[i].c_str(), -1, font.get(), 
                           Gdiplus::PointF(static_cast<Gdiplus::REAL>(LEFT_MARGIN), y), &textBrush);
@@ -1613,7 +1736,10 @@ void Scroll(int delta) {
     
     RECT rect;
     GetClientRect(g_hwnd, &rect);
-    int maxVisibleLines = rect.bottom / LINE_HEIGHT;
+    int maxVisibleLines = (rect.bottom - TOP_MARGIN) / LINE_HEIGHT;
+    if (maxVisibleLines < 1) {
+        maxVisibleLines = 1;
+    }
     
     // 使用换行后的行数
     const std::vector<std::wstring>& displayLines = g_wrappedLines.empty() ? g_lines : g_wrappedLines;
@@ -1636,7 +1762,10 @@ void ScrollHalfPage(bool scrollUp) {
     
     RECT rect;
     GetClientRect(g_hwnd, &rect);
-    int maxVisibleLines = rect.bottom / LINE_HEIGHT;
+    int maxVisibleLines = (rect.bottom - TOP_MARGIN) / LINE_HEIGHT;
+    if (maxVisibleLines < 1) {
+        maxVisibleLines = 1;
+    }
     
     // 半页行数
     int halfPageLines = std::max(1, maxVisibleLines / 2);
@@ -1762,6 +1891,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             UpdateClickThroughState();
             break;
             
+        case WM_MOUSEACTIVATE:
+            return MA_NOACTIVATE;
+            
         case WM_HOTKEY:
             switch (wParam) {
                 case 1: Scroll(-3); break;      // 向上滚动3行
@@ -1857,6 +1989,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             // 否则开始拖动窗口
             SetCapture(hwnd);
             g_isDragging = true;
+            g_hasMovedDuringDrag = false;
             GetCursorPos(&g_dragStart);
             RECT windowRect;
             GetWindowRect(hwnd, &windowRect);
@@ -1890,6 +2023,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 GetCursorPos(&current);
                 int dx = current.x - g_dragStart.x;
                 int dy = current.y - g_dragStart.y;
+                if (!g_hasMovedDuringDrag) {
+                    if (std::abs(dx) < DRAG_THRESHOLD && std::abs(dy) < DRAG_THRESHOLD) {
+                        return 0;
+                    }
+                    g_hasMovedDuringDrag = true;
+                }
                 SetWindowPos(hwnd, NULL, g_windowStart.x + dx, g_windowStart.y + dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
                 RenderLayeredWindow();
                 return 0;
@@ -1901,6 +2040,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             if (g_isDragging) {
                 ReleaseCapture();
                 g_isDragging = false;
+                bool moved = g_hasMovedDuringDrag;
+                g_hasMovedDuringDrag = false;
+                if (!moved) {
+                    if (TryHandleLinkClick(LOWORD(lParam), HIWORD(lParam))) {
+                        if (g_isLocked && !g_ctrlPressed) {
+                            RestorePreviousForeground();
+                        }
+                        return 0;
+                    }
+                }
                 if (g_isLocked && !g_ctrlPressed) {
                     RestorePreviousForeground();
                 }
