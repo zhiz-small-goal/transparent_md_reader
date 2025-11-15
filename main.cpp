@@ -121,7 +121,6 @@ BYTE g_backgroundAlpha = 0; // 0 = 完全透明背景
 
 // SQLite 历史数据库
 sqlite3* g_historyDB = nullptr;
-std::wstring g_dbPath = L"history/history.db";
 
 Gdiplus::GdiplusStartupInput g_gdiplusInput;
 ULONG_PTR g_gdiplusToken = 0;
@@ -1035,7 +1034,7 @@ HICON CreateCustomTrayIcon() {
     return hIcon;
 }
 
-static std::wstring CombinePath(const std::wstring& base, const std::wstring& name) {
+std::wstring CombinePath(const std::wstring& base, const std::wstring& name) {
     if (base.empty()) {
         return name;
     }
