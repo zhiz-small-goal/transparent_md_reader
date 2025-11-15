@@ -57,14 +57,21 @@ const int TOP_MARGIN = 10;
 const int DRAG_THRESHOLD = 3;
 bool g_visible = true;
 std::wstring g_currentFile;
+std::wstring g_exeDirectory;
+std::wstring g_historyDir = L"history";
 std::wstring g_configFile = L"md_reader_config.ini";
+std::wstring g_dbPath = L"history/history.db";
 std::vector<std::vector<LinkRange>> g_lineLinks;
 std::vector<std::vector<LinkRange>> g_wrappedLineLinks;
+bool g_hoveredLinkActive = false;
+int g_hoveredLinkDisplayIndex = -1;
+LinkRange g_hoveredLinkRange;
 
 enum TrayCommand {
     ID_TRAY_BG_SLIDER = 1001,
     ID_TRAY_TEXT_COLOR,
     ID_TRAY_TEXT_ALPHA,
+    ID_TRAY_LINK_HIGHLIGHT,
     ID_TRAY_LOCK_WINDOW,
     ID_TRAY_EXIT,
     ID_TRAY_RELOAD,
@@ -128,6 +135,7 @@ HICON g_customIcon = NULL;
 HWND g_sliderWindow = NULL;
 bool g_sliderForBackground = true;
 int g_sliderCurrentValue = 0;
+bool g_linkHighlightEnabled = true;
 
 const int SLIDER_WIDTH = 220;
 const int SLIDER_HEIGHT = 115;
@@ -165,6 +173,8 @@ void ShowSliderWindow(bool forBackground);
 void DestroySliderWindow();
 void CreateOrUpdateTrayIcon(HINSTANCE hInstance);
 void RemoveTrayIcon();
+std::wstring CombinePath(const std::wstring& base, const std::wstring& name);
+void InitializePaths();
 void OpenFileDialog(HWND owner);
 HMENU CreateTrayMenu();
 LRESULT CALLBACK SliderWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -176,7 +186,8 @@ UINT_PTR CALLBACK ColorDialogHookProc(HWND hdlg, UINT uiMsg, WPARAM wParam, LPAR
 void WrapTextLines();
 void ProcessMarkdownLinks();
 std::unique_ptr<Gdiplus::Font> CreateRenderFont();
-bool HitTestLink(int x, int y, std::wstring& url);
+bool HitTestLink(int x, int y, std::wstring& url, int* outDisplayIndex = nullptr,
+                 LinkRange* outSpan = nullptr);
 bool TryHandleLinkClick(int x, int y);
 std::wstring ResolveLinkTarget(const std::wstring& raw);
 void LoadFileAndReset(const std::wstring& filepath);
@@ -493,7 +504,7 @@ void RestorePreviousForeground() {
 }
 
 bool InitHistoryDB() {
-    CreateDirectoryW(L"history", NULL);
+    CreateDirectoryW(g_historyDir.c_str(), NULL);
     
     int len = WideCharToMultiByte(CP_UTF8, 0, g_dbPath.c_str(), -1, NULL, 0, NULL, NULL);
     std::string dbPath(len, '\0');
@@ -646,7 +657,7 @@ void ShowSliderWindow(bool forBackground) {
         WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
         L"MdReaderSliderWindow",
         forBackground ? L"背景透明度" : L"文字透明度",
-        WS_CAPTION | WS_POPUP,
+        WS_CAPTION | WS_SYSMENU | WS_POPUP,
         CW_USEDEFAULT, CW_USEDEFAULT, SLIDER_WIDTH, SLIDER_HEIGHT,
         g_hwnd, NULL, hInstance, context);
 
@@ -749,6 +760,8 @@ HMENU CreateTrayMenu() {
 
     AppendMenu(menu, MF_STRING, ID_TRAY_BG_SLIDER, L"背景透明度…");
     AppendMenu(menu, MF_STRING, ID_TRAY_TEXT_ALPHA, L"文字透明度…");
+    AppendMenu(menu, MF_STRING | (g_linkHighlightEnabled ? MF_CHECKED : MF_UNCHECKED),
+               ID_TRAY_LINK_HIGHLIGHT, L"悬停链接高亮");
     AppendMenu(menu, MF_STRING, ID_TRAY_TEXT_COLOR, L"文字颜色…");
     AppendMenu(menu, MF_SEPARATOR, 0, NULL);
     // 锁定窗口选项（带勾选标记）
@@ -1022,6 +1035,41 @@ HICON CreateCustomTrayIcon() {
     return hIcon;
 }
 
+static std::wstring CombinePath(const std::wstring& base, const std::wstring& name) {
+    if (base.empty()) {
+        return name;
+    }
+    wchar_t last = base.back();
+    std::wstring combined = base;
+    if (last != L'\\' && last != L'/') {
+        combined.push_back(L'\\');
+    }
+    combined += name;
+    return combined;
+}
+
+void InitializePaths() {
+    wchar_t modulePath[MAX_PATH] = {};
+    if (GetModuleFileNameW(NULL, modulePath, MAX_PATH) > 0) {
+        std::wstring fullPath(modulePath);
+        size_t sep = fullPath.find_last_of(L"\\/");
+        if (sep != std::wstring::npos) {
+            g_exeDirectory = fullPath.substr(0, sep);
+        } else {
+            g_exeDirectory = fullPath;
+        }
+    } else {
+        g_exeDirectory = L".";
+    }
+    if (g_exeDirectory.empty()) {
+        g_exeDirectory = L".";
+    }
+    g_configFile = CombinePath(g_exeDirectory, L"md_reader_config.ini");
+    g_historyDir = CombinePath(g_exeDirectory, L"history");
+    g_dbPath = CombinePath(g_historyDir, L"history.db");
+    CreateDirectoryW(g_historyDir.c_str(), NULL);
+}
+
 void SaveProgress() {
     if (!g_currentFile.empty()) {
         SaveFileHistoryDB(g_currentFile);
@@ -1037,6 +1085,7 @@ void SaveProgress() {
     fwprintf(fp, L"TextAlpha=%d\n", (int)g_textAlpha);
     fwprintf(fp, L"BackgroundAlpha=%d\n", (int)g_backgroundAlpha);
     fwprintf(fp, L"TextColor=%d\n", (int)g_textColor);
+    fwprintf(fp, L"LinkHighlight=%d\n", g_linkHighlightEnabled ? 1 : 0);
     
     fclose(fp);
 }
@@ -1054,6 +1103,7 @@ void LoadProgress() {
     int bgAlpha = -1;
     int textColor = -1;
     int isLocked = -1;
+    int linkHighlight = -1;
     
     while (fgetws(line, 1024, fp)) {
         std::wstring wline(line);
@@ -1076,6 +1126,8 @@ void LoadProgress() {
             textColor = _wtoi(wline.substr(10).c_str());
         } else if (wline.find(L"IsLocked=") == 0) {
             isLocked = _wtoi(wline.substr(9).c_str());
+        } else if (wline.find(L"LinkHighlight=") == 0) {
+            linkHighlight = _wtoi(wline.substr(14).c_str());
         }
     }
     
@@ -1092,6 +1144,9 @@ void LoadProgress() {
     }
     if (isLocked >= 0) {
         g_isLocked = (isLocked != 0);
+    }
+    if (linkHighlight >= 0) {
+        g_linkHighlightEnabled = (linkHighlight != 0);
     }
     
     if (!lastFile.empty()) {
@@ -1296,6 +1351,38 @@ void ProcessMarkdownLinks() {
         std::vector<LinkRange> ranges;
         
         size_t pos = 0;
+        auto tryParseLink = [&](size_t bracketPos, bool treatAsImage) -> bool {
+            size_t closingBracket = line.find(L']', bracketPos + 1);
+            if (closingBracket == std::wstring::npos) {
+                return false;
+            }
+            if (closingBracket + 1 >= line.size() || line[closingBracket + 1] != L'(') {
+                return false;
+            }
+            size_t closingParen = line.find(L')', closingBracket + 2);
+            if (closingParen == std::wstring::npos) {
+                return false;
+            }
+            std::wstring linkText = line.substr(bracketPos + 1, closingBracket - bracketPos - 1);
+            std::wstring displayText = linkText;
+            if (treatAsImage && displayText.empty()) {
+                displayText = L"[image]";
+            }
+            std::wstring target = line.substr(closingBracket + 2, closingParen - (closingBracket + 2));
+            target = TrimLinkTargetText(target);
+            if (displayText.empty() || target.empty()) {
+                return false;
+            }
+            int startChar = static_cast<int>(sanitized.size());
+            sanitized += displayText;
+            LinkRange range;
+            range.startChar = startChar;
+            range.length = static_cast<int>(displayText.size());
+            range.url = target;
+            ranges.push_back(std::move(range));
+            pos = closingParen + 1;
+            return true;
+        };
         while (pos < line.size()) {
             if (line[pos] == L'\\' && pos + 1 < line.size()) {
                 sanitized.push_back(line[pos + 1]);
@@ -1303,28 +1390,15 @@ void ProcessMarkdownLinks() {
                 continue;
             }
             
+            if (line[pos] == L'!' && pos + 1 < line.size() && line[pos + 1] == L'[') {
+                if (tryParseLink(pos + 1, true)) {
+                    continue;
+                }
+            }
+            
             if (line[pos] == L'[') {
-                size_t closingBracket = line.find(L']', pos + 1);
-                if (closingBracket != std::wstring::npos &&
-                    closingBracket + 1 < line.size() &&
-                    line[closingBracket + 1] == L'(') {
-                    size_t closingParen = line.find(L')', closingBracket + 2);
-                    if (closingParen != std::wstring::npos) {
-                        std::wstring linkText = line.substr(pos + 1, closingBracket - pos - 1);
-                        std::wstring target = line.substr(closingBracket + 2, closingParen - (closingBracket + 2));
-                        int startChar = static_cast<int>(sanitized.size());
-                        sanitized += linkText;
-                        target = TrimLinkTargetText(target);
-                        if (!linkText.empty() && !target.empty()) {
-                            LinkRange range;
-                            range.startChar = startChar;
-                            range.length = static_cast<int>(linkText.size());
-                            range.url = target;
-                            ranges.push_back(std::move(range));
-                        }
-                        pos = closingParen + 1;
-                        continue;
-                    }
+                if (tryParseLink(pos, false)) {
+                    continue;
                 }
             }
             
@@ -1526,7 +1600,7 @@ std::wstring ResolveLinkTarget(const std::wstring& raw) {
     return target;
 }
 
-bool HitTestLink(int x, int y, std::wstring& url) {
+bool HitTestLink(int x, int y, std::wstring& url, int* outDisplayIndex, LinkRange* outSpan) {
     if (!g_hwnd) return false;
     RECT clientRect;
     GetClientRect(g_hwnd, &clientRect);
@@ -1587,6 +1661,12 @@ bool HitTestLink(int x, int y, std::wstring& url) {
         float endX = MeasureTextWidth(lineText, span.startChar + span.length, graphics, font.get());
         if (relativeX >= startX && relativeX <= endX) {
             url = span.url;
+            if (outDisplayIndex) {
+                *outDisplayIndex = displayIndex;
+            }
+            if (outSpan) {
+                *outSpan = span;
+            }
             handled = true;
             break;
         }
@@ -1602,7 +1682,7 @@ bool HitTestLink(int x, int y, std::wstring& url) {
 
 bool TryHandleLinkClick(int x, int y) {
     std::wstring link;
-    if (!HitTestLink(x, y, link)) {
+    if (!HitTestLink(x, y, link, nullptr, nullptr)) {
         return false;
     }
     std::wstring target = ResolveLinkTarget(link);
@@ -1663,11 +1743,18 @@ void RenderLayeredWindow() {
         return;
     }
 
-    Gdiplus::SolidBrush textBrush(Gdiplus::Color(g_textAlpha,
-        GetRValue(g_textColor), GetGValue(g_textColor), GetBValue(g_textColor)));
+    Gdiplus::Color baseTextColor(g_textAlpha,
+        GetRValue(g_textColor), GetGValue(g_textColor), GetBValue(g_textColor));
+    Gdiplus::SolidBrush textBrush(baseTextColor);
+    Gdiplus::Color highlightColor(60,
+        GetRValue(g_indicatorColor), GetGValue(g_indicatorColor), GetBValue(g_indicatorColor));
+    Gdiplus::SolidBrush highlightBrush(highlightColor);
+    Gdiplus::Pen underlinePen(baseTextColor, 1.0f);
 
     // 使用换行后的行数据
     const std::vector<std::wstring>& displayLines = g_wrappedLines.empty() ? g_lines : g_wrappedLines;
+    const std::vector<std::vector<LinkRange>>& linkLines =
+        g_wrappedLines.empty() ? g_lineLinks : g_wrappedLineLinks;
     
     int maxVisibleLines = (height - TOP_MARGIN) / LINE_HEIGHT;
     if (maxVisibleLines < 1) {
@@ -1676,10 +1763,44 @@ void RenderLayeredWindow() {
     int startLine = g_scrollOffset;
     int endLine = std::min((int)displayLines.size(), startLine + maxVisibleLines);
 
+    Gdiplus::REAL fontHeight = font->GetHeight(&graphics);
     float y = static_cast<float>(TOP_MARGIN);
     for (int i = startLine; i < endLine; ++i) {
-        graphics.DrawString(displayLines[i].c_str(), -1, font.get(), 
-                          Gdiplus::PointF(static_cast<Gdiplus::REAL>(LEFT_MARGIN), y), &textBrush);
+        float lineY = y;
+        const std::wstring& lineText = displayLines[i];
+        const std::vector<LinkRange>* spans = nullptr;
+        if (i >= 0 && i < static_cast<int>(linkLines.size())) {
+            spans = &linkLines[i];
+        }
+        if (spans && !spans->empty()) {
+            float highlightTop = lineY - 2.0f;
+            float highlightHeight = static_cast<float>(LINE_HEIGHT) - 4.0f;
+            for (const auto& span : *spans) {
+                bool isHovered = g_hoveredLinkActive &&
+                    g_hoveredLinkDisplayIndex == i &&
+                    g_hoveredLinkRange.startChar == span.startChar &&
+                    g_hoveredLinkRange.length == span.length;
+                float startX = MeasureTextWidth(lineText, span.startChar, graphics, font.get());
+                float endX = MeasureTextWidth(lineText, span.startChar + span.length, graphics, font.get());
+                if (isHovered && g_linkHighlightEnabled && endX > startX) {
+                    graphics.FillRectangle(&highlightBrush,
+                        static_cast<Gdiplus::REAL>(LEFT_MARGIN) + startX, highlightTop,
+                        endX - startX, highlightHeight);
+                }
+            }
+        }
+        graphics.DrawString(lineText.c_str(), -1, font.get(),
+                            Gdiplus::PointF(static_cast<Gdiplus::REAL>(LEFT_MARGIN), lineY), &textBrush);
+        if (spans && !spans->empty()) {
+            float underlineY = lineY + fontHeight - 2.0f;
+            for (const auto& span : *spans) {
+                float startX = MeasureTextWidth(lineText, span.startChar, graphics, font.get());
+                float endX = MeasureTextWidth(lineText, span.startChar + span.length, graphics, font.get());
+                graphics.DrawLine(&underlinePen,
+                    static_cast<Gdiplus::REAL>(LEFT_MARGIN) + startX, underlineY,
+                    static_cast<Gdiplus::REAL>(LEFT_MARGIN) + endX, underlineY);
+            }
+        }
         y += static_cast<float>(LINE_HEIGHT);
     }
 
@@ -1912,6 +2033,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 case ID_TRAY_TEXT_ALPHA:
                     ShowSliderWindow(false);
                     break;
+                case ID_TRAY_LINK_HIGHLIGHT:
+                    g_linkHighlightEnabled = !g_linkHighlightEnabled;
+                    RenderLayeredWindow();
+                    SaveProgress();
+                    break;
                 case ID_TRAY_TEXT_COLOR:
                 {
                     static COLORREF customColors[16] = {};
@@ -2014,6 +2140,29 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             
             // 如果悬停状态改变，重新绘制
             if (wasCloseHovered != g_closeButtonHovered || wasLockHovered != g_lockIconHovered) {
+                RenderLayeredWindow();
+            }
+            
+            bool hoverChanged = false;
+            int hoveredDisplayIdx = -1;
+            LinkRange hoveredRange;
+            if (HitTestLink(x, y, hoveredRange.url, &hoveredDisplayIdx, &hoveredRange)) {
+                if (!g_hoveredLinkActive ||
+                    g_hoveredLinkDisplayIndex != hoveredDisplayIdx ||
+                    g_hoveredLinkRange.startChar != hoveredRange.startChar ||
+                    g_hoveredLinkRange.length != hoveredRange.length) {
+                    g_hoveredLinkActive = true;
+                    g_hoveredLinkDisplayIndex = hoveredDisplayIdx;
+                    g_hoveredLinkRange = hoveredRange;
+                    hoverChanged = true;
+                }
+            } else if (g_hoveredLinkActive) {
+                g_hoveredLinkActive = false;
+                g_hoveredLinkDisplayIndex = -1;
+                g_hoveredLinkRange = LinkRange();
+                hoverChanged = true;
+            }
+            if (hoverChanged) {
                 RenderLayeredWindow();
             }
             
@@ -2231,6 +2380,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     InitCommonControlsEx(&icex);
 
     g_taskbarCreatedMsg = RegisterWindowMessage(L"TaskbarCreated");
+
+    InitializePaths();
 
     // 初始化 SQLite 历史数据库
     InitHistoryDB();
