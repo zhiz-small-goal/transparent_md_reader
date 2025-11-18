@@ -14,6 +14,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <iterator>
 #include <cstdio>
 #include <cwchar>
 #include <cwctype>
@@ -1299,6 +1300,104 @@ static std::wstring TrimLinkTargetText(const std::wstring& input) {
     return input.substr(start, end - start);
 }
 
+struct GlobalLinkRange {
+    size_t startOffset = 0;
+    size_t length = 0;
+    std::wstring url;
+};
+
+static bool TryParseMarkdownLink(const std::wstring& text,
+                                 size_t& cursor,
+                                 std::wstring& sanitizedOutput,
+                                 std::vector<GlobalLinkRange>& ranges,
+                                 bool treatAsImage) {
+    if (cursor >= text.size() || text[cursor] != L'[') {
+        return false;
+    }
+
+    size_t i = cursor + 1;
+    std::wstring linkText;
+    while (i < text.size()) {
+        wchar_t ch = text[i];
+        if (ch == L'\\' && i + 1 < text.size()) {
+            linkText.push_back(text[i + 1]);
+            i += 2;
+            continue;
+        }
+        if (ch == L']') {
+            break;
+        }
+        linkText.push_back(ch);
+        ++i;
+    }
+    if (i >= text.size() || text[i] != L']') {
+        return false;
+    }
+    size_t afterBracket = i + 1;
+    while (afterBracket < text.size() && iswspace(text[afterBracket])) {
+        ++afterBracket;
+    }
+    if (afterBracket >= text.size() || text[afterBracket] != L'(') {
+        return false;
+    }
+
+    size_t targetStart = afterBracket + 1;
+    std::wstring target;
+    int depth = 1;
+    size_t j = targetStart;
+    while (j < text.size()) {
+        wchar_t ch = text[j];
+        if (ch == L'\\' && j + 1 < text.size()) {
+            target.push_back(text[j + 1]);
+            j += 2;
+            continue;
+        }
+        if (ch == L'(') {
+            ++depth;
+            target.push_back(ch);
+            ++j;
+            continue;
+        }
+        if (ch == L')') {
+            --depth;
+            if (depth == 0) {
+                break;
+            }
+            target.push_back(ch);
+            ++j;
+            continue;
+        }
+        target.push_back(ch);
+        ++j;
+    }
+    if (depth != 0) {
+        return false;
+    }
+
+    std::wstring displayText = linkText;
+    if (displayText.empty()) {
+        if (treatAsImage) {
+            displayText = L"[image]";
+        } else {
+            return false;
+        }
+    }
+    std::wstring cleanedTarget = TrimLinkTargetText(target);
+    if (cleanedTarget.empty()) {
+        return false;
+    }
+
+    GlobalLinkRange span;
+    span.startOffset = sanitizedOutput.size();
+    span.length = displayText.size();
+    span.url = std::move(cleanedTarget);
+    ranges.push_back(std::move(span));
+
+    sanitizedOutput += displayText;
+    cursor = j + 1; // move past closing ')'
+    return true;
+}
+
 static void AppendAutoLinkRanges(const std::wstring& text, std::vector<LinkRange>& ranges) {
     size_t searchPos = 0;
     while (searchPos < text.size()) {
@@ -1342,73 +1441,106 @@ static void AppendAutoLinkRanges(const std::wstring& text, std::vector<LinkRange
 }
 
 void ProcessMarkdownLinks() {
-    g_lineLinks.assign(g_lines.size(), {});
-    for (size_t idx = 0; idx < g_lines.size(); ++idx) {
-        const std::wstring& line = g_lines[idx];
-        std::wstring sanitized;
-        sanitized.reserve(line.size());
-        std::vector<LinkRange> ranges;
-        
-        size_t pos = 0;
-        auto tryParseLink = [&](size_t bracketPos, bool treatAsImage) -> bool {
-            size_t closingBracket = line.find(L']', bracketPos + 1);
-            if (closingBracket == std::wstring::npos) {
-                return false;
-            }
-            if (closingBracket + 1 >= line.size() || line[closingBracket + 1] != L'(') {
-                return false;
-            }
-            size_t closingParen = line.find(L')', closingBracket + 2);
-            if (closingParen == std::wstring::npos) {
-                return false;
-            }
-            std::wstring linkText = line.substr(bracketPos + 1, closingBracket - bracketPos - 1);
-            std::wstring displayText = linkText;
-            if (treatAsImage && displayText.empty()) {
-                displayText = L"[image]";
-            }
-            std::wstring target = line.substr(closingBracket + 2, closingParen - (closingBracket + 2));
-            target = TrimLinkTargetText(target);
-            if (displayText.empty() || target.empty()) {
-                return false;
-            }
-            int startChar = static_cast<int>(sanitized.size());
-            sanitized += displayText;
-            LinkRange range;
-            range.startChar = startChar;
-            range.length = static_cast<int>(displayText.size());
-            range.url = target;
-            ranges.push_back(std::move(range));
-            pos = closingParen + 1;
-            return true;
-        };
-        while (pos < line.size()) {
-            if (line[pos] == L'\\' && pos + 1 < line.size()) {
-                sanitized.push_back(line[pos + 1]);
-                pos += 2;
+    if (g_lines.empty()) {
+        g_lineLinks.clear();
+        return;
+    }
+
+    std::wstring fullText;
+    size_t estimatedSize = 0;
+    for (const auto& line : g_lines) {
+        estimatedSize += line.size() + 1;
+    }
+    fullText.reserve(estimatedSize);
+    for (size_t i = 0; i < g_lines.size(); ++i) {
+        fullText += g_lines[i];
+        if (i + 1 < g_lines.size()) {
+            fullText.push_back(L'\n');
+        }
+    }
+
+    std::wstring sanitized;
+    sanitized.reserve(fullText.size());
+    std::vector<GlobalLinkRange> globalRanges;
+    size_t pos = 0;
+    while (pos < fullText.size()) {
+        if (fullText[pos] == L'\\' && pos + 1 < fullText.size()) {
+            sanitized.push_back(fullText[pos + 1]);
+            pos += 2;
+            continue;
+        }
+
+        if (fullText[pos] == L'!' && pos + 1 < fullText.size() && fullText[pos + 1] == L'[') {
+            size_t bracketPos = pos + 1;
+            if (TryParseMarkdownLink(fullText, bracketPos, sanitized, globalRanges, true)) {
+                pos = bracketPos;
                 continue;
             }
-            
-            if (line[pos] == L'!' && pos + 1 < line.size() && line[pos + 1] == L'[') {
-                if (tryParseLink(pos + 1, true)) {
-                    continue;
-                }
-            }
-            
-            if (line[pos] == L'[') {
-                if (tryParseLink(pos, false)) {
-                    continue;
-                }
-            }
-            
-            sanitized.push_back(line[pos]);
-            ++pos;
         }
-        
-        AppendAutoLinkRanges(sanitized, ranges);
-        
-        g_lines[idx] = sanitized;
-        g_lineLinks[idx] = std::move(ranges);
+
+        if (fullText[pos] == L'[') {
+            size_t bracketPos = pos;
+            if (TryParseMarkdownLink(fullText, bracketPos, sanitized, globalRanges, false)) {
+                pos = bracketPos;
+                continue;
+            }
+        }
+
+        sanitized.push_back(fullText[pos]);
+        ++pos;
+    }
+
+    std::vector<size_t> lineStartOffsets;
+    lineStartOffsets.reserve(g_lines.size() + 1);
+    g_lines.clear();
+    lineStartOffsets.push_back(0);
+    size_t lineStart = 0;
+    for (size_t i = 0; i < sanitized.size(); ++i) {
+        if (sanitized[i] == L'\n') {
+            g_lines.push_back(sanitized.substr(lineStart, i - lineStart));
+            lineStart = i + 1;
+            lineStartOffsets.push_back(lineStart);
+        }
+    }
+    g_lines.push_back(sanitized.substr(lineStart));
+
+    g_lineLinks.assign(g_lines.size(), {});
+    if (!globalRanges.empty() && !g_lines.empty()) {
+        for (const auto& span : globalRanges) {
+            size_t linkStart = span.startOffset;
+            size_t linkEnd = span.startOffset + span.length;
+            auto it = std::upper_bound(lineStartOffsets.begin(), lineStartOffsets.end(), linkStart);
+            size_t lineIdx = 0;
+            if (it == lineStartOffsets.begin()) {
+                lineIdx = 0;
+            } else {
+                lineIdx = static_cast<size_t>(std::distance(lineStartOffsets.begin(), it - 1));
+                if (lineIdx >= g_lines.size()) {
+                    lineIdx = g_lines.size() - 1;
+                }
+            }
+            while (lineIdx < g_lines.size() && linkStart < linkEnd) {
+                size_t currentLineStart = lineStartOffsets[lineIdx];
+                size_t currentLineEnd = currentLineStart + g_lines[lineIdx].size();
+                size_t overlapStart = std::max(currentLineStart, linkStart);
+                size_t overlapEnd = std::min(currentLineEnd, linkEnd);
+                if (overlapStart < overlapEnd) {
+                    LinkRange part;
+                    part.startChar = static_cast<int>(overlapStart - currentLineStart);
+                    part.length = static_cast<int>(overlapEnd - overlapStart);
+                    part.url = span.url;
+                    g_lineLinks[lineIdx].push_back(std::move(part));
+                }
+                if (linkEnd <= currentLineEnd) {
+                    break;
+                }
+                ++lineIdx;
+            }
+        }
+    }
+
+    for (size_t i = 0; i < g_lines.size(); ++i) {
+        AppendAutoLinkRanges(g_lines[i], g_lineLinks[i]);
     }
 }
 
