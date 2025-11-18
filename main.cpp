@@ -108,10 +108,11 @@ DWORD g_pageFlipStartTime = 0;
 // 锁定/穿透模式相关
 bool g_isLocked = false; // false=交互模式(默认), true=穿透模式
 const UINT_PTR TIMER_ID_CTRL_CHECK = 300;
-const UINT_PTR TIMER_ID_MOUSE_CHECK = 301;
 bool g_ctrlPressed = false; // Ctrl键是否按下
-bool g_rightButtonPressed = false; // 右键是否按下
+bool g_clickThrough = false; // 是否应当前开启点穿
 HWND g_prevForeground = NULL; // Ctrl按下时记录的前台窗口
+HHOOK g_mouseHook = NULL;
+bool g_rightClickActive = false;
 const int LOCK_ICON_SIZE = 28;
 const int LOCK_ICON_SPACING = 8; // 锁定图标与关闭按钮的间距
 RECT g_lockIconRect = {};
@@ -209,8 +210,12 @@ void UpdateLockIconRect();
 void DrawLockIcon(Gdiplus::Graphics& graphics, bool hovered);
 void UpdateClickThroughState();
 void CheckCtrlKeyState();
-void CheckMouseState();
 void RestorePreviousForeground();
+bool IsPointInsideWindow(const POINT& ptScreen);
+void ExecuteRightClickFlip(const POINT& screenPt);
+void BeginOverlayRightClick(const POINT& screenPt);
+void EndOverlayRightClick();
+LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam);
 
 bool IsPointInRect(int x, int y, const RECT& rect) {
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
@@ -354,6 +359,9 @@ void ToggleLockState() {
     g_isLocked = !g_isLocked;
     if (!g_isLocked) {
         g_prevForeground = NULL;
+        g_clickThrough = false;
+    } else {
+        g_clickThrough = true;
     }
     DebugLog(L"[ToggleLock] isLocked=%d\n", g_isLocked ? 1 : 0);
     UpdateClickThroughState();
@@ -366,7 +374,8 @@ void UpdateClickThroughState() {
 
     LONG exStyle = GetWindowLong(g_hwnd, GWL_EXSTYLE);
 
-    bool shouldBeTransparent = g_isLocked && !g_ctrlPressed && !g_rightButtonPressed;
+    bool hasTransparent = (exStyle & WS_EX_TRANSPARENT) != 0;
+    bool shouldBeTransparent = g_clickThrough && g_isLocked && !g_ctrlPressed;
 
     if (shouldBeTransparent) {
         POINT cursor;
@@ -376,29 +385,17 @@ void UpdateClickThroughState() {
             if (IsPointInRect(pt.x, pt.y, g_closeButtonRect) ||
                 IsPointInRect(pt.x, pt.y, g_lockIconRect)) {
                 shouldBeTransparent = false;
-                DebugLog(L"[UpdateClickThrough] mouseOnButton (%d,%d)\n", pt.x, pt.y);
             }
         }
     }
 
-    if (shouldBeTransparent) {
-        if (!(exStyle & WS_EX_TRANSPARENT)) {
-            SetWindowLong(g_hwnd, GWL_EXSTYLE, exStyle | WS_EX_TRANSPARENT);
-            DebugLog(L"[UpdateClickThrough] add transparent\n");
-        }
-    } else {
-        if (exStyle & WS_EX_TRANSPARENT) {
-            SetWindowLong(g_hwnd, GWL_EXSTYLE, exStyle & ~WS_EX_TRANSPARENT);
-            DebugLog(L"[UpdateClickThrough] remove transparent\n");
-        }
+    if (shouldBeTransparent && !hasTransparent) {
+        SetWindowLong(g_hwnd, GWL_EXSTYLE, exStyle | WS_EX_TRANSPARENT);
+        DebugLog(L"[UpdateClickThrough] add transparent\n");
+    } else if (!shouldBeTransparent && hasTransparent) {
+        SetWindowLong(g_hwnd, GWL_EXSTYLE, exStyle & ~WS_EX_TRANSPARENT);
+        DebugLog(L"[UpdateClickThrough] remove transparent\n");
     }
-
-    LONG newStyle = GetWindowLong(g_hwnd, GWL_EXSTYLE);
-    DebugLog(L"[UpdateClickThrough] locked=%d ctrl=%d right=%d -> hasTransparent=%d\n",
-             g_isLocked ? 1 : 0,
-             g_ctrlPressed ? 1 : 0,
-             g_rightButtonPressed ? 1 : 0,
-             (newStyle & WS_EX_TRANSPARENT) ? 1 : 0);
 }
 
 void CheckCtrlKeyState() {
@@ -428,46 +425,79 @@ void CheckCtrlKeyState() {
     g_ctrlPressed = ctrlNowPressed;
 
     if (g_isLocked) {
+        g_clickThrough = !g_ctrlPressed && !g_rightClickActive;
         UpdateClickThroughState();
         RenderLayeredWindow();
     }
 }
 
-void CheckMouseState() {
+bool IsPointInsideWindow(const POINT& ptScreen) {
+    if (!g_hwnd) return false;
+    RECT rect;
+    GetWindowRect(g_hwnd, &rect);
+    return PtInRect(&rect, ptScreen);
+}
+
+void ExecuteRightClickFlip(const POINT& screenPt) {
     if (!g_hwnd) return;
+    POINT clientPt = screenPt;
+    ScreenToClient(g_hwnd, &clientPt);
+    RECT clientRect;
+    GetClientRect(g_hwnd, &clientRect);
+    int windowHeight = clientRect.bottom - clientRect.top;
+    int midHeight = windowHeight / 2;
+    bool scrollUp = clientPt.y < midHeight;
+    ScrollHalfPage(scrollUp);
+    StartPageFlipAnimation(scrollUp ? FLIP_UP : FLIP_DOWN, clientPt.x, clientPt.y);
+}
 
-    bool rightNow = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
-    bool rightJustPressed = rightNow && !g_rightButtonPressed;
-    bool rightJustReleased = !rightNow && g_rightButtonPressed;
-    g_rightButtonPressed = rightNow;
-
-    if (rightJustPressed) {
-        DebugLog(L"[CheckMouse] rightDown\n");
-    } else if (rightJustReleased) {
-        DebugLog(L"[CheckMouse] rightUp\n");
-    }
-
-    if (g_isLocked) {
+void BeginOverlayRightClick(const POINT& screenPt) {
+    if (!g_hwnd) return;
+    if (g_clickThrough) {
+        g_clickThrough = false;
         UpdateClickThroughState();
     }
+    if (GetCapture() != g_hwnd) {
+        SetCapture(g_hwnd);
+    }
+    g_rightClickActive = true;
+    ExecuteRightClickFlip(screenPt);
+}
 
-    if (rightJustPressed && g_isLocked) {
-        POINT screenPt;
-        if (GetCursorPos(&screenPt)) {
-            POINT clientPt = screenPt;
-            ScreenToClient(g_hwnd, &clientPt);
-
-            RECT clientRect;
-            GetClientRect(g_hwnd, &clientRect);
-            int windowHeight = clientRect.bottom - clientRect.top;
-            int midHeight = windowHeight / 2;
-
-            bool scrollUp = clientPt.y < midHeight;
-            DebugLog(L"[CheckMouse] pageFlip %s at (%d,%d)\n", scrollUp ? L"UP" : L"DOWN", clientPt.x, clientPt.y);
-            ScrollHalfPage(scrollUp);
-            StartPageFlipAnimation(scrollUp ? FLIP_UP : FLIP_DOWN, clientPt.x, clientPt.y);
+void EndOverlayRightClick() {
+    if (!g_rightClickActive) return;
+    g_rightClickActive = false;
+    if (GetCapture() == g_hwnd) {
+        ReleaseCapture();
+    }
+    if (g_isLocked && !g_ctrlPressed) {
+        if (!g_clickThrough) {
+            g_clickThrough = true;
+            UpdateClickThroughState();
         }
     }
+}
+
+LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode >= 0 && g_hwnd && g_isLocked && !g_ctrlPressed) {
+        const MSLLHOOKSTRUCT* info = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
+        if (info) {
+            bool inWindow = g_visible && IsPointInsideWindow(info->pt);
+            if (inWindow) {
+                switch (wParam) {
+                    case WM_RBUTTONDOWN:
+                        BeginOverlayRightClick(info->pt);
+                        return 1;
+                    case WM_RBUTTONUP:
+                        EndOverlayRightClick();
+                        return 1;
+                    default:
+                        break;
+                }
+            }
+        }
+    }
+    return CallNextHookEx(g_mouseHook, nCode, wParam, lParam);
 }
 
 void RestorePreviousForeground() {
@@ -2137,8 +2167,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             CreateOrUpdateTrayIcon(((LPCREATESTRUCT)lParam)->hInstance);
             // 启动 Ctrl 键检测定时器
             SetTimer(hwnd, TIMER_ID_CTRL_CHECK, 50, NULL);
-            // 启动鼠标状态检测定时器
-            SetTimer(hwnd, TIMER_ID_MOUSE_CHECK, 50, NULL);
             // 初始化穿透状态（确保启动时无穿透）
             UpdateClickThroughState();
             break;
@@ -2346,6 +2374,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         
         case WM_RBUTTONDOWN:
         {
+            if (g_isLocked && !g_ctrlPressed) {
+                return 0;
+            }
             // 获取客户区坐标
             int x = LOWORD(lParam);
             int y = HIWORD(lParam);
@@ -2367,7 +2398,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             break;
         }
-        
+
+        case WM_RBUTTONUP:
+        {
+            if (g_isLocked && !g_ctrlPressed) {
+                return 0;
+            }
+            break;
+        }
+
         case WM_TIMER:
         {
             if (wParam == TIMER_ID_PAGE_INDICATOR) {
@@ -2379,11 +2418,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     KillTimer(hwnd, TIMER_ID_PAGE_INDICATOR);
                 }
             } else if (wParam == TIMER_ID_CTRL_CHECK) {
-                // 检查 Ctrl 键状态（用于临时交互）
+                // ��� Ctrl ��״̬��������ʱ������
                 CheckCtrlKeyState();
-            } else if (wParam == TIMER_ID_MOUSE_CHECK) {
-                // 检查鼠标状态（用于锁定模式右键翻页、按钮交互）
-                CheckMouseState();
             }
             break;
         }
@@ -2395,17 +2431,31 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             bool inClose = IsPointInRect(ptScreen.x, ptScreen.y, g_closeButtonRect);
             bool inLock = IsPointInRect(ptScreen.x, ptScreen.y, g_lockIconRect);
 
-            if (g_isLocked && !g_ctrlPressed && !g_rightButtonPressed && !inClose && !inLock) {
-                DebugLog(L"[HitTest] passthrough (%d,%d)\n", ptScreen.x, ptScreen.y);
-                return HTTRANSPARENT;
+            auto ensureClickThrough = [&](bool enable) {
+                if (g_clickThrough != enable) {
+                    g_clickThrough = enable;
+                    UpdateClickThroughState();
+                }
+            };
+
+            if (inClose || inLock) {
+                ensureClickThrough(false);
+                return HTCLIENT;
             }
 
-            DebugLog(L"[HitTest] client (%d,%d) locked=%d ctrl=%d right=%d\n",
-                     ptScreen.x, ptScreen.y,
-                     g_isLocked ? 1 : 0,
-                     g_ctrlPressed ? 1 : 0,
-                     g_rightButtonPressed ? 1 : 0);
-            return HTCLIENT;
+            if (!g_isLocked || g_ctrlPressed) {
+                ensureClickThrough(false);
+                return HTCLIENT;
+            }
+
+            bool rightDown = (GetKeyState(VK_RBUTTON) & 0x8000) != 0;
+            if (rightDown) {
+                ensureClickThrough(false);
+                return HTCLIENT;
+            }
+
+            ensureClickThrough(true);
+            return HTTRANSPARENT;
         }
 
         case WM_TRAYICON:
@@ -2468,10 +2518,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             // 清理所有定时器
             KillTimer(hwnd, TIMER_ID_PAGE_INDICATOR);
             KillTimer(hwnd, TIMER_ID_CTRL_CHECK);
-            KillTimer(hwnd, TIMER_ID_MOUSE_CHECK);
             if (g_gdiplusToken) {
                 Gdiplus::GdiplusShutdown(g_gdiplusToken);
                 g_gdiplusToken = 0;
+            }
+            if (g_mouseHook) {
+                UnhookWindowsHookEx(g_mouseHook);
+                g_mouseHook = NULL;
             }
             PostQuitMessage(0);
             break;
@@ -2547,6 +2600,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             CloseHandle(hMutex);
         }
         return 1;
+    }
+    
+    g_mouseHook = SetWindowsHookEx(WH_MOUSE_LL, LowLevelMouseProc, GetModuleHandle(NULL), 0);
+    if (!g_mouseHook) {
+        MessageBox(NULL, L"无法安装鼠标钩子，右键翻页功能可能不可用", L"提示", MB_OK | MB_ICONWARNING);
     }
     
     // 先加载上次的进度
