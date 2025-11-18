@@ -109,6 +109,7 @@ DWORD g_pageFlipStartTime = 0;
 bool g_isLocked = false; // false=交互模式(默认), true=穿透模式
 const UINT_PTR TIMER_ID_CTRL_CHECK = 300;
 bool g_ctrlPressed = false; // Ctrl键是否按下
+bool g_clickThrough = false; // 当前是否开启点穿
 HWND g_prevForeground = NULL; // Ctrl按下时记录的前台窗口
 HHOOK g_mouseHook = NULL;
 bool g_rightClickActive = false;
@@ -201,10 +202,12 @@ bool LoadFileHistoryDB(const std::wstring& path);
 void UpdateCloseButtonRect();
 void DrawCloseButton(Gdiplus::Graphics& graphics, bool hovered);
 bool IsPointInRect(int x, int y, const RECT& rect);
+bool ShouldOverlayBeClickThrough(const POINT* ptClientOpt = nullptr);
 void ScrollHalfPage(bool scrollUp);
 void DrawPageFlipIndicator(Gdiplus::Graphics& graphics);
 void StartPageFlipAnimation(PageFlipDirection direction, int x, int y);
 void ToggleLockState();
+void UpdateClickThroughState();
 void UpdateLockIconRect();
 void DrawLockIcon(Gdiplus::Graphics& graphics, bool hovered);
 void CheckCtrlKeyState();
@@ -217,6 +220,53 @@ LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam);
 
 bool IsPointInRect(int x, int y, const RECT& rect) {
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+
+// 统一判断当前是否应当开启点穿
+// ptClientOpt == nullptr 时使用当前鼠标位置；否则用传入的客户区坐标
+bool ShouldOverlayBeClickThrough(const POINT* ptClientOpt)
+{
+    if (!g_hwnd)
+        return false;
+
+    // 未锁定 → 一律不点穿
+    if (!g_isLocked)
+        return false;
+
+    // Ctrl 按下时 → 暂停点穿方便交互
+    if (g_ctrlPressed)
+        return false;
+
+    // 正在右键翻页时 → 暂停点穿，避免状态抖动
+    if (g_rightClickActive)
+        return false;
+
+    // 计算当前用于判断的客户区坐标
+    POINT ptClient{};
+    if (ptClientOpt)
+    {
+        ptClient = *ptClientOpt;
+    }
+    else
+    {
+        POINT ptScreen{};
+        if (!GetCursorPos(&ptScreen))
+            return false;
+
+        ptClient = ptScreen;
+        ScreenToClient(g_hwnd, &ptClient);
+    }
+
+    // 如果在关闭按钮或锁定图标区域，必须允许交互，不能点穿
+    if (IsPointInRect(ptClient.x, ptClient.y, g_closeButtonRect) ||
+        IsPointInRect(ptClient.x, ptClient.y, g_lockIconRect))
+    {
+        return false;
+    }
+
+    // 其他区域在锁定模式下允许点穿
+    return true;
 }
 
 void UpdateCloseButtonRect() {
@@ -353,43 +403,81 @@ void DrawLockIcon(Gdiplus::Graphics& graphics, bool hovered) {
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeNone);
 }
 
-void ToggleLockState() {
+void ToggleLockState()
+{
     g_isLocked = !g_isLocked;
-    if (!g_isLocked) {
+
+    if (!g_isLocked)
+    {
         g_prevForeground = NULL;
     }
+
     DebugLog(L"[ToggleLock] isLocked=%d\n", g_isLocked ? 1 : 0);
+
+    UpdateClickThroughState();
     RenderLayeredWindow();
     SaveProgress();
 }
 
-void CheckCtrlKeyState() {
+void UpdateClickThroughState()
+{
+    if (!g_hwnd)
+        return;
+
+    LONG exStyle = GetWindowLong(g_hwnd, GWL_EXSTYLE);
+    bool hasTransparent = (exStyle & WS_EX_TRANSPARENT) != 0;
+
+    // 统一用 ShouldOverlayBeClickThrough 计算当前期望状态
+    bool shouldBeTransparent = ShouldOverlayBeClickThrough(nullptr);
+
+    // 同步缓存字段，方便调试查看
+    g_clickThrough = shouldBeTransparent;
+
+    if (shouldBeTransparent && !hasTransparent)
+    {
+        SetWindowLong(g_hwnd, GWL_EXSTYLE, exStyle | WS_EX_TRANSPARENT);
+        DebugLog(L"[UpdateClickThrough] add transparent\n");
+    }
+    else if (!shouldBeTransparent && hasTransparent)
+    {
+        SetWindowLong(g_hwnd, GWL_EXSTYLE, exStyle & ~WS_EX_TRANSPARENT);
+        DebugLog(L"[UpdateClickThrough] remove transparent\n");
+    }
+}
+
+void CheckCtrlKeyState()
+{
     bool ctrlNowPressed = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
 
-    if (ctrlNowPressed == g_ctrlPressed) {
+    if (ctrlNowPressed == g_ctrlPressed)
         return;
-    }
 
     DebugLog(L"[CheckCtrl] %d -> %d\n", g_ctrlPressed ? 1 : 0, ctrlNowPressed ? 1 : 0);
 
-    if (ctrlNowPressed) {
-        if (g_isLocked && !g_prevForeground) {
+    if (ctrlNowPressed)
+    {
+        if (g_isLocked && !g_prevForeground)
+        {
             HWND fg = GetForegroundWindow();
-            if (fg && fg != g_hwnd) {
+            if (fg && fg != g_hwnd)
+            {
                 g_prevForeground = fg;
             }
         }
-    } else {
-        if (g_isLocked) {
+    }
+    else
+    {
+        if (g_isLocked)
             RestorePreviousForeground();
-        } else {
+        else
             g_prevForeground = NULL;
-        }
     }
 
     g_ctrlPressed = ctrlNowPressed;
 
-    if (g_isLocked) {
+    UpdateClickThroughState();
+    if (g_isLocked)
+    {
         RenderLayeredWindow();
     }
 }
@@ -414,21 +502,35 @@ void ExecuteRightClickFlip(const POINT& screenPt) {
     StartPageFlipAnimation(scrollUp ? FLIP_UP : FLIP_DOWN, clientPt.x, clientPt.y);
 }
 
-void BeginOverlayRightClick(const POINT& screenPt) {
-    if (!g_hwnd) return;
-    if (GetCapture() != g_hwnd) {
+void BeginOverlayRightClick(const POINT& screenPt)
+{
+    if (!g_hwnd)
+        return;
+
+    g_rightClickActive = true;
+
+    if (GetCapture() != g_hwnd)
+    {
         SetCapture(g_hwnd);
     }
-    g_rightClickActive = true;
+
+    UpdateClickThroughState();
     ExecuteRightClickFlip(screenPt);
 }
 
-void EndOverlayRightClick() {
-    if (!g_rightClickActive) return;
+void EndOverlayRightClick()
+{
+    if (!g_rightClickActive)
+        return;
+
     g_rightClickActive = false;
-    if (GetCapture() == g_hwnd) {
+
+    if (GetCapture() == g_hwnd)
+    {
         ReleaseCapture();
     }
+
+    UpdateClickThroughState();
 }
 
 LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
@@ -1538,6 +1640,7 @@ void LoadFileAndReset(const std::wstring& filepath) {
     }
     
     WrapTextLines();
+    UpdateClickThroughState();
     if (g_hwnd) {
         RenderLayeredWindow();
     }
@@ -2287,7 +2390,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     }
                     g_hasMovedDuringDrag = true;
                 }
-                SetWindowPos(hwnd, NULL, g_windowStart.x + dx, g_windowStart.y + dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                SetWindowPos(hwnd, NULL,
+                             g_windowStart.x + dx,
+                             g_windowStart.y + dy,
+                             0, 0,
+                             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
                 return 0;
             }
             break;
@@ -2375,25 +2482,34 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         
         case WM_NCHITTEST:
         {
+            // 先让系统算一个基础 hit-test 结果（例如边框、标题栏等）
             LRESULT baseHit = DefWindowProc(hwnd, WM_NCHITTEST, wParam, lParam);
-            if (baseHit != HTCLIENT) {
-                return baseHit;
-            }
 
-            POINT ptScreen = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            // 如果不在客户区，就直接用系统结果（比如边缘调整大小）
+            if (baseHit != HTCLIENT)
+                return baseHit;
+
+            // 计算客户区坐标
+            POINT ptScreen{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             POINT ptClient = ptScreen;
             ScreenToClient(hwnd, &ptClient);
 
+            // 按钮区域一律保持可交互
             if (IsPointInRect(ptClient.x, ptClient.y, g_closeButtonRect) ||
-                IsPointInRect(ptClient.x, ptClient.y, g_lockIconRect)) {
+                IsPointInRect(ptClient.x, ptClient.y, g_lockIconRect))
+            {
                 return HTCLIENT;
             }
 
-            if (!g_isLocked || g_ctrlPressed || g_rightClickActive) {
-                return HTCLIENT;
+            // 由统一逻辑判断是否要点穿
+            if (ShouldOverlayBeClickThrough(&ptClient))
+            {
+                // 对于 layered + WS_EX_TRANSPARENT 的窗口，
+                // HTTRANSPARENT 会配合样式一起实现真正穿透
+                return HTTRANSPARENT;
             }
 
-            return HTTRANSPARENT;
+            return HTCLIENT;
         }
 
         case WM_TRAYICON:
@@ -2562,6 +2678,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
     LocalFree(argv);
     
+    UpdateClickThroughState();
     ShowWindow(g_hwnd, SW_SHOW);
     RenderLayeredWindow();
     
@@ -2591,6 +2708,3 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     return (int)msg.wParam;
 }
-
-
-
