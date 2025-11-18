@@ -109,7 +109,6 @@ DWORD g_pageFlipStartTime = 0;
 bool g_isLocked = false; // false=交互模式(默认), true=穿透模式
 const UINT_PTR TIMER_ID_CTRL_CHECK = 300;
 bool g_ctrlPressed = false; // Ctrl键是否按下
-bool g_clickThrough = false; // 是否应当前开启点穿
 HWND g_prevForeground = NULL; // Ctrl按下时记录的前台窗口
 HHOOK g_mouseHook = NULL;
 bool g_rightClickActive = false;
@@ -208,7 +207,6 @@ void StartPageFlipAnimation(PageFlipDirection direction, int x, int y);
 void ToggleLockState();
 void UpdateLockIconRect();
 void DrawLockIcon(Gdiplus::Graphics& graphics, bool hovered);
-void UpdateClickThroughState();
 void CheckCtrlKeyState();
 void RestorePreviousForeground();
 bool IsPointInsideWindow(const POINT& ptScreen);
@@ -359,43 +357,10 @@ void ToggleLockState() {
     g_isLocked = !g_isLocked;
     if (!g_isLocked) {
         g_prevForeground = NULL;
-        g_clickThrough = false;
-    } else {
-        g_clickThrough = true;
     }
     DebugLog(L"[ToggleLock] isLocked=%d\n", g_isLocked ? 1 : 0);
-    UpdateClickThroughState();
     RenderLayeredWindow();
     SaveProgress();
-}
-
-void UpdateClickThroughState() {
-    if (!g_hwnd) return;
-
-    LONG exStyle = GetWindowLong(g_hwnd, GWL_EXSTYLE);
-
-    bool hasTransparent = (exStyle & WS_EX_TRANSPARENT) != 0;
-    bool shouldBeTransparent = g_clickThrough && g_isLocked && !g_ctrlPressed;
-
-    if (shouldBeTransparent) {
-        POINT cursor;
-        if (GetCursorPos(&cursor)) {
-            POINT pt = cursor;
-            ScreenToClient(g_hwnd, &pt);
-            if (IsPointInRect(pt.x, pt.y, g_closeButtonRect) ||
-                IsPointInRect(pt.x, pt.y, g_lockIconRect)) {
-                shouldBeTransparent = false;
-            }
-        }
-    }
-
-    if (shouldBeTransparent && !hasTransparent) {
-        SetWindowLong(g_hwnd, GWL_EXSTYLE, exStyle | WS_EX_TRANSPARENT);
-        DebugLog(L"[UpdateClickThrough] add transparent\n");
-    } else if (!shouldBeTransparent && hasTransparent) {
-        SetWindowLong(g_hwnd, GWL_EXSTYLE, exStyle & ~WS_EX_TRANSPARENT);
-        DebugLog(L"[UpdateClickThrough] remove transparent\n");
-    }
 }
 
 void CheckCtrlKeyState() {
@@ -425,8 +390,6 @@ void CheckCtrlKeyState() {
     g_ctrlPressed = ctrlNowPressed;
 
     if (g_isLocked) {
-        g_clickThrough = !g_ctrlPressed && !g_rightClickActive;
-        UpdateClickThroughState();
         RenderLayeredWindow();
     }
 }
@@ -453,10 +416,6 @@ void ExecuteRightClickFlip(const POINT& screenPt) {
 
 void BeginOverlayRightClick(const POINT& screenPt) {
     if (!g_hwnd) return;
-    if (g_clickThrough) {
-        g_clickThrough = false;
-        UpdateClickThroughState();
-    }
     if (GetCapture() != g_hwnd) {
         SetCapture(g_hwnd);
     }
@@ -469,12 +428,6 @@ void EndOverlayRightClick() {
     g_rightClickActive = false;
     if (GetCapture() == g_hwnd) {
         ReleaseCapture();
-    }
-    if (g_isLocked && !g_ctrlPressed) {
-        if (!g_clickThrough) {
-            g_clickThrough = true;
-            UpdateClickThroughState();
-        }
     }
 }
 
@@ -1585,7 +1538,6 @@ void LoadFileAndReset(const std::wstring& filepath) {
     }
     
     WrapTextLines();
-    UpdateClickThroughState();
     if (g_hwnd) {
         RenderLayeredWindow();
     }
@@ -2167,8 +2119,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             CreateOrUpdateTrayIcon(((LPCREATESTRUCT)lParam)->hInstance);
             // 启动 Ctrl 键检测定时器
             SetTimer(hwnd, TIMER_ID_CTRL_CHECK, 50, NULL);
-            // 初始化穿透状态（确保启动时无穿透）
-            UpdateClickThroughState();
             break;
             
         case WM_MOUSEACTIVATE:
@@ -2338,7 +2288,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     g_hasMovedDuringDrag = true;
                 }
                 SetWindowPos(hwnd, NULL, g_windowStart.x + dx, g_windowStart.y + dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-                RenderLayeredWindow();
                 return 0;
             }
             break;
@@ -2426,35 +2375,24 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         
         case WM_NCHITTEST:
         {
+            LRESULT baseHit = DefWindowProc(hwnd, WM_NCHITTEST, wParam, lParam);
+            if (baseHit != HTCLIENT) {
+                return baseHit;
+            }
+
             POINT ptScreen = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            ScreenToClient(hwnd, &ptScreen);
-            bool inClose = IsPointInRect(ptScreen.x, ptScreen.y, g_closeButtonRect);
-            bool inLock = IsPointInRect(ptScreen.x, ptScreen.y, g_lockIconRect);
+            POINT ptClient = ptScreen;
+            ScreenToClient(hwnd, &ptClient);
 
-            auto ensureClickThrough = [&](bool enable) {
-                if (g_clickThrough != enable) {
-                    g_clickThrough = enable;
-                    UpdateClickThroughState();
-                }
-            };
-
-            if (inClose || inLock) {
-                ensureClickThrough(false);
+            if (IsPointInRect(ptClient.x, ptClient.y, g_closeButtonRect) ||
+                IsPointInRect(ptClient.x, ptClient.y, g_lockIconRect)) {
                 return HTCLIENT;
             }
 
-            if (!g_isLocked || g_ctrlPressed) {
-                ensureClickThrough(false);
+            if (!g_isLocked || g_ctrlPressed || g_rightClickActive) {
                 return HTCLIENT;
             }
 
-            bool rightDown = (GetKeyState(VK_RBUTTON) & 0x8000) != 0;
-            if (rightDown) {
-                ensureClickThrough(false);
-                return HTCLIENT;
-            }
-
-            ensureClickThrough(true);
             return HTTRANSPARENT;
         }
 
@@ -2623,9 +2561,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         WrapTextLines();
     }
     LocalFree(argv);
-    
-    // 应用加载的锁定状态（在显示窗口前）
-    UpdateClickThroughState();
     
     ShowWindow(g_hwnd, SW_SHOW);
     RenderLayeredWindow();
